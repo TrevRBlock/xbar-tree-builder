@@ -143,6 +143,17 @@ const UndoContext =
     null,
   );
 
+interface DisplayOptionsContextValue {
+  showNodeBoxes: boolean;
+  showMovementArrows: boolean;
+}
+
+const DisplayOptionsContext =
+  createContext<DisplayOptionsContextValue>({
+    showNodeBoxes: true,
+    showMovementArrows: true,
+  });
+
 function createTreeSnapshot(
   currentNodes: readonly SyntaxNode[],
   currentEdges: readonly Edge[],
@@ -267,6 +278,12 @@ function SyntaxNodeComponent({
   const saveUndoSnapshot =
     useContext(UndoContext);
 
+  const {
+    showNodeBoxes,
+  } = useContext(
+    DisplayOptionsContext,
+  );
+
   const updateNodeInternals =
     useUpdateNodeInternals();
 
@@ -357,6 +374,7 @@ function SyntaxNodeComponent({
     data.label,
     id,
     isEditing,
+    showNodeBoxes,
     updateNodeInternals,
   ]);
 
@@ -378,6 +396,7 @@ function SyntaxNodeComponent({
             currentNodes,
             currentEdges,
             id,
+            showNodeBoxes,
           );
 
         reactFlow.setNodes(
@@ -420,7 +439,21 @@ function SyntaxNodeComponent({
               boxShadow: "none",
               overflow: "visible",
             }
-          : undefined
+          : !showNodeBoxes
+            ? {
+                width: "max-content",
+                minWidth: 0,
+                minHeight: 0,
+                padding: "1px 3px",
+                borderWidth: 0,
+                borderColor:
+                  "transparent",
+                background:
+                  "transparent",
+                boxShadow: "none",
+                lineHeight: 1.1,
+              }
+            : undefined
       }
       title={
         isMovementSummary
@@ -454,7 +487,18 @@ function SyntaxNodeComponent({
                 pointerEvents:
                   "none",
               }
-            : undefined
+            : !showNodeBoxes
+              ? {
+                  width: 1,
+                  height: 1,
+                  minWidth: 1,
+                  minHeight: 1,
+                  border: 0,
+                  background:
+                    "transparent",
+                  opacity: 0,
+                }
+              : undefined
         }
       />
 
@@ -473,14 +517,31 @@ function SyntaxNodeComponent({
           >
             <path
               d="M 44 4 L 8 36 L 80 36 Z"
-              fill="rgba(255,255,255,0.92)"
+              fill={
+                showNodeBoxes
+                  ? "rgba(255,255,255,0.92)"
+                  : "none"
+              }
               stroke="currentColor"
               strokeWidth="2"
               vectorEffect="non-scaling-stroke"
             />
           </svg>
 
-          <span className="movement-summary-word-box">
+          <span
+            className="movement-summary-word-box"
+            style={
+              !showNodeBoxes
+                ? {
+                    borderColor:
+                      "transparent",
+                    background:
+                      "transparent",
+                    boxShadow: "none",
+                  }
+                : undefined
+            }
+          >
             <span className="movement-summary-words">
               {data.label || "\u00A0"}
             </span>
@@ -587,6 +648,20 @@ function SyntaxNodeComponent({
           type="source"
           position={Position.Bottom}
           className="syntax-handle"
+          style={
+            !showNodeBoxes
+              ? {
+                  width: 1,
+                  height: 1,
+                  minWidth: 1,
+                  minHeight: 1,
+                  border: 0,
+                  background:
+                    "transparent",
+                  opacity: 0,
+                }
+              : undefined
+          }
         />
       )}
 
@@ -642,8 +717,18 @@ function MovementEdge({
   markerEnd,
   style,
 }: EdgeProps) {
+  const {
+    showMovementArrows,
+  } = useContext(
+    DisplayOptionsContext,
+  );
+
   const currentNodes =
     useNodes<SyntaxNode>();
+
+  if (!showMovementArrows) {
+    return null;
+  }
 
   /*
    * Place the lowest part of every movement
@@ -1171,6 +1256,22 @@ function wouldCreateCycle(
 const SISTER_GAP = 36;
 const LEVEL_GAP = 85;
 
+/*
+ * Boxless mode uses substantially less
+ * space because the branch lines attach
+ * directly beside the visible labels.
+ */
+const BOXLESS_SISTER_GAP = 24;
+const BOXLESS_LEVEL_GAP = 42;
+
+/*
+ * The condensed-copy triangle is positioned
+ * 54 pixels above its React Flow node.
+ * This value places the triangle apex exactly
+ * against the bottom of its phrase parent.
+ */
+const MOVEMENT_SUMMARY_APEX_OFFSET = 54;
+
 function getSyntaxNodeWidth(
   node: SyntaxNode,
 ): number {
@@ -1310,7 +1411,18 @@ function layoutTreeComponent(
   currentNodes: readonly SyntaxNode[],
   currentEdges: readonly Edge[],
   startingNodeId: string,
+  showNodeBoxes = true,
 ): SyntaxNode[] {
+  const activeSisterGap =
+    showNodeBoxes
+      ? SISTER_GAP
+      : BOXLESS_SISTER_GAP;
+
+  const activeLevelGap =
+    showNodeBoxes
+      ? LEVEL_GAP
+      : BOXLESS_LEVEL_GAP;
+
   const structuralEdges =
     currentEdges.filter(
       (edge) =>
@@ -1540,7 +1652,7 @@ function layoutTreeComponent(
       0,
     ) +
     (childIds.length - 1) *
-      SISTER_GAP;
+      activeSisterGap;
 
   subtreeSpan = Math.max(
     nodeWidth,
@@ -1609,7 +1721,7 @@ const completeChildrenWidth =
     0,
   ) +
   (childIds.length - 1) *
-    SISTER_GAP;
+    activeSisterGap;
 
 /*
  * Begin at the left edge of the complete
@@ -1628,15 +1740,45 @@ childIds.forEach(
       nextChildLeft +
       childSpan / 2;
 
+    const childNode =
+      nodeById.get(childId);
+
+    /*
+     * Movement summaries use an absolutely
+     * positioned triangle whose apex sits
+     * above the summary node. Calculate its
+     * vertical position from the parent's
+     * actual measured height rather than the
+     * ordinary level gap.
+     *
+     * This keeps the triangle apex attached
+     * to the phrase label in both boxed and
+     * boxless modes.
+     */
+    const childY =
+      childNode?.data.kind ===
+      "movementSummary"
+        ? y +
+          (
+            node.measured?.height ??
+            (
+              showNodeBoxes
+                ? 40
+                : 20
+            )
+          ) +
+          MOVEMENT_SUMMARY_APEX_OFFSET
+        : y + activeLevelGap;
+
     placeSubtree(
       childId,
       childCentreX,
-      y + LEVEL_GAP,
+      childY,
     );
 
     nextChildLeft +=
       childSpan +
-      SISTER_GAP;
+      activeSisterGap;
   },
 );
   }
@@ -1669,6 +1811,116 @@ childIds.forEach(
     };
   });
 }
+function layoutAllTreeComponents(
+  currentNodes: readonly SyntaxNode[],
+  currentEdges: readonly Edge[],
+  showNodeBoxes: boolean,
+): SyntaxNode[] {
+  if (currentNodes.length === 0) {
+    return [];
+  }
+
+  const structuralEdges =
+    currentEdges.filter(
+      (edge) =>
+        !isMovementEdge(edge),
+    );
+
+  const nodeIdsWithParents =
+    new Set(
+      structuralEdges.map(
+        (edge) => edge.target,
+      ),
+    );
+
+  const rootNodes =
+    currentNodes
+      .filter(
+        (node) =>
+          !nodeIdsWithParents.has(
+            node.id,
+          ),
+      )
+      .sort(
+        (
+          firstNode,
+          secondNode,
+        ) => {
+          const verticalDifference =
+            firstNode.position.y -
+            secondNode.position.y;
+
+          if (
+            verticalDifference !== 0
+          ) {
+            return verticalDifference;
+          }
+
+          return (
+            firstNode.position.x -
+            secondNode.position.x
+          );
+        },
+      );
+
+  let balancedNodes = [
+    ...currentNodes,
+  ];
+
+  for (const rootNode of rootNodes) {
+    balancedNodes =
+      layoutTreeComponent(
+        balancedNodes,
+        currentEdges,
+        rootNode.id,
+        showNodeBoxes,
+      );
+  }
+
+  return balancedNodes;
+}
+
+function nodePositionsChanged(
+  currentNodes: readonly SyntaxNode[],
+  nextNodes: readonly SyntaxNode[],
+): boolean {
+  const currentNodeById =
+    new Map(
+      currentNodes.map(
+        (node) => [
+          node.id,
+          node,
+        ],
+      ),
+    );
+
+  for (const nextNode of nextNodes) {
+    const currentNode =
+      currentNodeById.get(
+        nextNode.id,
+      );
+
+    if (!currentNode) {
+      return true;
+    }
+
+    if (
+      Math.abs(
+        currentNode.position.x -
+        nextNode.position.x,
+      ) > 0.25 ||
+      Math.abs(
+        currentNode.position.y -
+        nextNode.position.y,
+      ) > 0.25
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 interface PendingBarAttachment {
   parentId: string;
   draggedId: string;
@@ -1808,6 +2060,8 @@ function createLatexDocument(
     readonly SyntaxNode[],
   currentEdges:
     readonly Edge[],
+  showNodeBoxes: boolean,
+  showMovementArrows: boolean,
 ): string {
   if (
     currentNodes.length === 0
@@ -1979,17 +2233,25 @@ function createLatexDocument(
       );
 
     let nodeStyle =
-      "syntax phrase";
+      showNodeBoxes
+        ? "syntax phrase"
+        : "syntax phrase plain";
 
     if (
       node.data.kind === "head"
     ) {
-      nodeStyle = "syntax head";
+      nodeStyle =
+        showNodeBoxes
+          ? "syntax head"
+          : "syntax head plain";
     } else if (
       node.data.kind === "word" ||
       node.data.kind === "wordInput"
     ) {
-      nodeStyle = "syntax word";
+      nodeStyle =
+        showNodeBoxes
+          ? "syntax word"
+          : "syntax word plain";
     }
 
     if (node.data.isLowerCopy) {
@@ -2106,7 +2368,11 @@ function createLatexDocument(
 
     summaryCommands.push(
       [
-        "\\draw[summary triangle]",
+        `\\draw[${
+          showNodeBoxes
+            ? "summary triangle"
+            : "summary triangle plain"
+        }]`,
         `(${nodeName}apex)`,
         `-- (${nodeName}left)`,
         `-- (${nodeName}right)`,
@@ -2116,7 +2382,11 @@ function createLatexDocument(
 
     summaryCommands.push(
       [
-        "\\node[syntax word, anchor=north]",
+        `\\node[${
+          showNodeBoxes
+            ? "syntax word"
+            : "syntax word plain"
+        }, anchor=north]`,
         `(${nodeName})`,
         `at ($(${nodeName}apex)`,
         `+(0,-${formatLatexNumber(
@@ -2201,7 +2471,8 @@ function createLatexDocument(
     lowestNormalNodeY - 2.4;
 
   const movementEdgeCommands =
-    movementEdges.map((edge) => {
+    showMovementArrows
+      ? movementEdges.map((edge) => {
       const sourceName =
         getLatexNodeName(
           edge.source,
@@ -2240,7 +2511,8 @@ function createLatexDocument(
         "..",
         `(${targetName}.south);`,
       ].join(" ");
-    });
+    })
+      : [];
 
   return [
     "\\documentclass[tikz,border=8pt]{standalone}",
@@ -2283,6 +2555,27 @@ function createLatexDocument(
     "    inner ysep=3pt,",
     "    font=\\rmfamily",
     "  },",
+    "  syntax phrase plain/.style={",
+    "    draw=none,",
+    "    fill=none,",
+    "    inner xsep=5pt,",
+    "    inner ysep=3pt,",
+    "    font=\\sffamily\\bfseries",
+    "  },",
+    "  syntax head plain/.style={",
+    "    draw=none,",
+    "    fill=none,",
+    "    inner xsep=5pt,",
+    "    inner ysep=3pt,",
+    "    font=\\sffamily\\bfseries",
+    "  },",
+    "  syntax word plain/.style={",
+    "    draw=none,",
+    "    fill=none,",
+    "    inner xsep=5pt,",
+    "    inner ysep=3pt,",
+    "    font=\\rmfamily",
+    "  },",
     "  syntax lower copy/.style={",
     "    dashed,",
     "    opacity=0.82",
@@ -2294,6 +2587,11 @@ function createLatexDocument(
     "  summary triangle/.style={",
     "    draw=black!85,",
     "    fill=white,",
+    "    line width=0.9pt",
+    "  },",
+    "  summary triangle plain/.style={",
+    "    draw=black!85,",
+    "    fill=none,",
     "    line width=0.9pt",
     "  },",
     "  movement edge/.style={",
@@ -2404,6 +2702,59 @@ function getNodeAtFlowPosition(
 
 const TREE_SESSION_STORAGE_KEY =
   "xbar-tree-builder-session-v1";
+
+const SHOW_NODE_BOXES_STORAGE_KEY =
+  "xbar-tree-builder-show-node-boxes-v1";
+
+const SHOW_MOVEMENT_ARROWS_STORAGE_KEY =
+  "xbar-tree-builder-show-movement-arrows-v1";
+
+function loadShowNodeBoxes(): boolean {
+  if (
+    typeof window === "undefined"
+  ) {
+    return true;
+  }
+
+  try {
+    const savedValue =
+      window.localStorage.getItem(
+        SHOW_NODE_BOXES_STORAGE_KEY,
+      );
+
+    if (savedValue === null) {
+      return true;
+    }
+
+    return savedValue === "true";
+  } catch {
+    return true;
+  }
+}
+
+
+function loadShowMovementArrows(): boolean {
+  if (
+    typeof window === "undefined"
+  ) {
+    return true;
+  }
+
+  try {
+    const savedValue =
+      window.localStorage.getItem(
+        SHOW_MOVEMENT_ARROWS_STORAGE_KEY,
+      );
+
+    if (savedValue === null) {
+      return true;
+    }
+
+    return savedValue === "true";
+  } catch {
+    return true;
+  }
+}
 
 interface SavedTreeSession {
   nodes: SyntaxNode[];
@@ -2653,6 +3004,165 @@ const dragStartSnapshotRef =
 
 const [undoCount, setUndoCount] =
   useState(0);
+
+const [
+  showNodeBoxes,
+  setShowNodeBoxes,
+] = useState<boolean>(
+  loadShowNodeBoxes,
+);
+
+const [
+  showMovementArrows,
+  setShowMovementArrows,
+] = useState<boolean>(
+  loadShowMovementArrows,
+);
+
+useEffect(() => {
+  try {
+    window.localStorage.setItem(
+      SHOW_NODE_BOXES_STORAGE_KEY,
+      String(showNodeBoxes),
+    );
+  } catch (error) {
+    console.error(
+      "The box display setting could not be saved.",
+      error,
+    );
+  }
+}, [showNodeBoxes]);
+
+useEffect(() => {
+  try {
+    window.localStorage.setItem(
+      SHOW_MOVEMENT_ARROWS_STORAGE_KEY,
+      String(showMovementArrows),
+    );
+  } catch (error) {
+    console.error(
+      "The movement-arrow setting could not be saved.",
+      error,
+    );
+  }
+}, [showMovementArrows]);
+
+const autoBalanceFrameRef =
+  useRef<number | null>(null);
+
+const scheduleAutoBalance =
+  useCallback(() => {
+    if (!reactFlowInstance) {
+      return;
+    }
+
+    if (
+      autoBalanceFrameRef.current !==
+      null
+    ) {
+      cancelAnimationFrame(
+        autoBalanceFrameRef.current,
+      );
+    }
+
+    /*
+     * Two animation frames allow React Flow
+     * to finish measuring newly created,
+     * edited, moved, or boxless nodes first.
+     */
+    autoBalanceFrameRef.current =
+      requestAnimationFrame(() => {
+        autoBalanceFrameRef.current =
+          requestAnimationFrame(() => {
+            const currentNodes =
+              reactFlowInstance
+                .getNodes();
+
+            const currentEdges =
+              reactFlowInstance
+                .getEdges();
+
+            const balancedNodes =
+              layoutAllTreeComponents(
+                currentNodes,
+                currentEdges,
+                showNodeBoxes,
+              );
+
+            if (
+              nodePositionsChanged(
+                currentNodes,
+                balancedNodes,
+              )
+            ) {
+              setNodes(
+                balancedNodes,
+              );
+            }
+
+            autoBalanceFrameRef.current =
+              null;
+          });
+      });
+  }, [
+    reactFlowInstance,
+    setNodes,
+    showNodeBoxes,
+  ]);
+
+useEffect(() => {
+  return () => {
+    if (
+      autoBalanceFrameRef.current !==
+      null
+    ) {
+      cancelAnimationFrame(
+        autoBalanceFrameRef.current,
+      );
+    }
+  };
+}, []);
+
+/*
+ * Rebalance after structural changes,
+ * node creation/deletion, restored sessions,
+ * and box-display changes.
+ */
+const layoutStructureSignature = [
+  nodes
+    .map(
+      (node) =>
+        `${node.id}:${node.data.kind}:${Boolean(
+          node.data.isLowerCopy,
+        )}`,
+    )
+    .join("|"),
+
+  edges
+    .filter(
+      (edge) =>
+        !isMovementEdge(edge),
+    )
+    .map(
+      (edge) =>
+        [
+          edge.id,
+          edge.source,
+          edge.target,
+          getSiblingOrder(edge),
+          Boolean(edge.hidden),
+        ].join(":"),
+    )
+    .join("|"),
+].join("||");
+
+useEffect(() => {
+  scheduleAutoBalance();
+}, [
+  layoutStructureSignature,
+  scheduleAutoBalance,
+  showNodeBoxes,
+]);
 
 /*
  * Save shortly after any node or edge change.
@@ -2941,6 +3451,7 @@ function attachDirectly(
       nodeSnapshot,
       updatedEdges,
       parentNode.id,
+      showNodeBoxes,
     );
 
   if (
@@ -2953,6 +3464,7 @@ function attachDirectly(
         balancedNodes,
         updatedEdges,
         previousParentEdge.source,
+        showNodeBoxes,
       );
   }
 
@@ -3124,6 +3636,7 @@ function attachAsAdjunct(
       nodeSnapshot,
       updatedEdges,
       newBarId,
+      showNodeBoxes,
     );
 
   if (
@@ -3136,6 +3649,7 @@ function attachAsAdjunct(
         balancedNodes,
         updatedEdges,
         previousAdjunctParentEdge.source,
+        showNodeBoxes,
       );
   }
 
@@ -3626,6 +4140,7 @@ function moveAttachedSubtree(
       updatedNodes,
       updatedEdges,
       targetParentNode.id,
+      showNodeBoxes,
     );
 
   setNodes(balancedNodes);
@@ -3672,6 +4187,7 @@ const handleNodeDragStop:
     if (
       possibleParents.length === 0
     ) {
+      scheduleAutoBalance();
       return;
     }
 
@@ -3759,6 +4275,7 @@ const handleNodeDragStop:
         edges,
       )
     ) {
+      scheduleAutoBalance();
       return;
     }
 
@@ -3939,6 +4456,7 @@ const handleNodeDragStop:
       nodeSnapshot,
       updatedEdges,
       parentNode.id,
+      showNodeBoxes,
     );
 
   setNodes(balancedNodes);
@@ -3975,7 +4493,12 @@ const handleNodeDragStop:
           y: event.clientY,
         });
 
-        saveUndoSnapshot();
+    const placementLevelGap =
+      showNodeBoxes
+        ? LEVEL_GAP
+        : BOXLESS_LEVEL_GAP;
+
+    saveUndoSnapshot();
     /*
      * Check the existing canvas before
      * adding the new nodes.
@@ -4045,7 +4568,7 @@ const handleNodeDragStop:
             x: dropPosition.x,
             y:
               dropPosition.y +
-              LEVEL_GAP,
+              placementLevelGap,
           },
           data: {
             label: intermediateLabel,
@@ -4059,7 +4582,7 @@ const handleNodeDragStop:
             x: dropPosition.x,
             y:
               dropPosition.y +
-              LEVEL_GAP * 2,
+              placementLevelGap * 2,
           },
           data: {
             label: headLabel,
@@ -4073,7 +4596,7 @@ const handleNodeDragStop:
             x: dropPosition.x,
             y:
               dropPosition.y +
-              LEVEL_GAP * 3,
+              placementLevelGap * 3,
           },
           data: {
             label: "",
@@ -4152,7 +4675,7 @@ const handleNodeDragStop:
             x: dropPosition.x,
             y:
               dropPosition.y +
-              LEVEL_GAP,
+              placementLevelGap,
           },
           data: {
             label: "",
@@ -4199,15 +4722,26 @@ const handleNodeDragStop:
      * subtree separate.
      */
     if (!targetNode) {
-      setNodes((currentNodes) => [
-        ...currentNodes,
+      const updatedNodes = [
+        ...nodes,
         ...createdNodes,
-      ]);
+      ];
 
-      setEdges((currentEdges) => [
-        ...currentEdges,
+      const updatedEdges = [
+        ...edges,
         ...createdEdges,
-      ]);
+      ];
+
+      const balancedNodes =
+        layoutTreeComponent(
+          updatedNodes,
+          updatedEdges,
+          draggedRootId,
+          showNodeBoxes,
+        );
+
+      setNodes(balancedNodes);
+      setEdges(updatedEdges);
 
       return;
     }
@@ -4382,6 +4916,7 @@ const handleNodeDragStop:
    * not clipped.
    */
   const hasMovementArrow =
+    showMovementArrows &&
     edges.some(isMovementEdge);
 
   const imagePadding =
@@ -4476,6 +5011,8 @@ function exportTreeAsLatex() {
       createLatexDocument(
         nodes,
         edges,
+        showNodeBoxes,
+        showMovementArrows,
       );
 
     downloadTextFile(
@@ -4601,8 +5138,9 @@ function exportTreeAsLatex() {
       </li>
 
       <li>
-        The tree automatically balances
-        after the new subtree is attached.
+        The complete tree automatically
+        rebalances after nodes are created,
+        attached, edited, or moved.
       </li>
     </ul>
   </details>
@@ -4792,6 +5330,69 @@ function exportTreeAsLatex() {
 
   <details>
     <summary>
+      Show or hide label boxes
+    </summary>
+
+    <ul>
+      <li>
+        Keep Show boxes checked to display
+        boxes around every phrase,
+        category, and lexical word.
+      </li>
+
+      <li>
+        Clear Show boxes to display only
+        labels, structural lines,
+        triangles, and movement arrows.
+        Branch spacing becomes more compact
+        and lines attach closer to labels.
+      </li>
+
+      <li>
+        PNG and LaTeX exports use the
+        currently selected box setting.
+      </li>
+
+      <li>
+        The box setting is remembered when
+        the page is reopened.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Show or hide movement arrows
+    </summary>
+
+    <ul>
+      <li>
+        Keep Show movement arrows checked
+        to display curved dashed arrows
+        between lower and higher copies.
+      </li>
+
+      <li>
+        Clear Show movement arrows to hide
+        every movement arrow without
+        deleting movement structure or
+        condensed lower copies.
+      </li>
+
+      <li>
+        PNG and LaTeX exports use the
+        currently selected arrow setting.
+      </li>
+
+      <li>
+        The arrow setting is remembered
+        when the page is reopened.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
       Export the tree
     </summary>
 
@@ -4871,6 +5472,82 @@ function exportTreeAsLatex() {
           </div>
 
           <div className="toolbar-buttons">
+            <label
+              title="Show or hide boxes around all phrase, category, and word labels"
+              style={{
+                display:
+                  "inline-flex",
+                alignItems:
+                  "center",
+                gap: 7,
+                padding:
+                  "7px 10px",
+                border:
+                  "1px solid #c7ccd4",
+                borderRadius: 6,
+                background:
+                  "#ffffff",
+                cursor:
+                  "pointer",
+                userSelect:
+                  "none",
+                fontSize: 14,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={
+                  showNodeBoxes
+                }
+                onChange={(event) =>
+                  setShowNodeBoxes(
+                    event.target
+                      .checked,
+                  )
+                }
+              />
+
+              Show boxes
+            </label>
+
+            <label
+              title="Show or hide all curved movement arrows"
+              style={{
+                display:
+                  "inline-flex",
+                alignItems:
+                  "center",
+                gap: 7,
+                padding:
+                  "7px 10px",
+                border:
+                  "1px solid #c7ccd4",
+                borderRadius: 6,
+                background:
+                  "#ffffff",
+                cursor:
+                  "pointer",
+                userSelect:
+                  "none",
+                fontSize: 14,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={
+                  showMovementArrows
+                }
+                onChange={(event) =>
+                  setShowMovementArrows(
+                    event.target
+                      .checked,
+                  )
+                }
+              />
+
+              Show movement arrows
+            </label>
+
             <button
   type="button"
   className="undo-button"
@@ -4921,9 +5598,15 @@ function exportTreeAsLatex() {
   }
   onDrop={handleCanvasDrop}
 >
-          <UndoContext.Provider
-  value={saveUndoSnapshot}
+          <DisplayOptionsContext.Provider
+  value={{
+    showNodeBoxes,
+    showMovementArrows,
+  }}
 >
+  <UndoContext.Provider
+    value={saveUndoSnapshot}
+  >
   <ReactFlow
     nodes={nodes}
     edges={edges}
@@ -4957,7 +5640,8 @@ function exportTreeAsLatex() {
 
     <Controls />
   </ReactFlow>
-</UndoContext.Provider>
+  </UndoContext.Provider>
+</DisplayOptionsContext.Provider>
         </div>
       </main>
     
