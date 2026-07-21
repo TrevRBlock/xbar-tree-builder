@@ -541,3 +541,30 @@ button {
   font-size: 11px;
   font-weight: 500;
 }
+
+.lower-copy-node {
+  border-style: dashed;
+  border-color: #96717a;
+  background: #faf6f7;
+  opacity: 0.68;
+  cursor: default;
+}
+
+.lower-copy-node
+  .syntax-node-label {
+  text-decoration-line:
+    line-through;
+  text-decoration-thickness: 2px;
+  text-decoration-color:
+    #8b2f3f;
+}
+
+.lower-copy-node
+  .syntax-handle {
+  pointer-events: none;
+  opacity: 0;
+}
+
+.movement-edge-path {
+  pointer-events: none;
+}

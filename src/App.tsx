@@ -1,10 +1,10 @@
 import {
+  createContext,
   useCallback,
+  useContext,
+  useEffect,
   useRef,
   useState,
-  useEffect,
-  createContext,
-  useContext,
   type DragEvent,
 } from "react";
 
@@ -12,23 +12,26 @@ import { toPng } from "html-to-image";
 
 import {
   Background,
+  BaseEdge,
   Controls,
   Handle,
+  MarkerType,
   Position,
   ReactFlow,
   ReactFlowProvider,
   addEdge,
+  getNodesBounds,
   useEdgesState,
   useNodesState,
   useReactFlow,
   useUpdateNodeInternals,
-  getNodesBounds,
   type Connection,
-type Edge,
-type Node,
-type NodeProps,
-type OnNodeDrag,
-type ReactFlowInstance,
+  type Edge,
+  type EdgeProps,
+  type Node,
+  type NodeProps,
+  type OnNodeDrag,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 
 import "@xyflow/react/dist/style.css";
@@ -44,6 +47,7 @@ interface SyntaxNodeData
   extends Record<string, unknown> {
   label: string;
   kind: NodeKind;
+  isLowerCopy?: boolean;
 }
 
 type SyntaxNode = Node<
@@ -238,20 +242,27 @@ function SyntaxNodeComponent({
   return (
     <div
       className={[
-        "syntax-node",
-        `${data.kind}-node`,
-        selected
-          ? "selected-syntax-node"
-          : "",
-        isEditing
-          ? "editing-syntax-node"
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
+  "syntax-node",
+  `${data.kind}-node`,
+  selected
+    ? "selected-syntax-node"
+    : "",
+  isEditing
+    ? "editing-syntax-node"
+    : "",
+  data.isLowerCopy
+    ? "lower-copy-node"
+    : "",
+]
+  .filter(Boolean)
+  .join(" ")}
       title="Double-click to edit"
       onDoubleClick={(event) => {
   event.stopPropagation();
+
+  if (data.isLowerCopy) {
+    return;
+  }
 
   if (!isEditing) {
     saveUndoSnapshot?.();
@@ -323,6 +334,59 @@ function SyntaxNodeComponent({
   );
 }
 
+function MovementEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  markerEnd,
+  style,
+}: EdgeProps) {
+  /*
+   * Route movement arrows around the
+   * right side of the tree.
+   */
+  const verticalDistance =
+    Math.abs(
+      targetY - sourceY,
+    );
+
+  const sideOffset =
+    Math.max(
+      90,
+      verticalDistance * 0.22,
+    );
+
+  const sideX =
+    Math.max(
+      sourceX,
+      targetX,
+    ) + sideOffset;
+
+  const movementPath = [
+    `M ${sourceX},${sourceY}`,
+    `C ${sideX},${sourceY}`,
+    `${sideX},${targetY}`,
+    `${targetX},${targetY}`,
+  ].join(" ");
+
+  return (
+    <BaseEdge
+      id={id}
+      path={movementPath}
+      markerEnd={markerEnd}
+      style={style}
+      interactionWidth={18}
+      className="movement-edge-path"
+    />
+  );
+}
+
+const edgeTypes = {
+  movement: MovementEdge,
+};
+
 const nodeTypes = {
   syntaxNode: SyntaxNodeComponent,
 };
@@ -350,6 +414,65 @@ function PaletteCard({
     </button>
   );
 }
+function isMovementEdge(
+  edge: Edge,
+): boolean {
+  return (
+    edge.data?.edgeKind ===
+    "movement"
+  );
+}
+
+function getStructuralDescendantIds(
+  rootNodeId: string,
+  currentEdges: readonly Edge[],
+): Set<string> {
+  const descendantIds =
+    new Set<string>([
+      rootNodeId,
+    ]);
+
+  const nodesToCheck = [
+    rootNodeId,
+  ];
+
+  while (nodesToCheck.length > 0) {
+    const currentNodeId =
+      nodesToCheck.pop();
+
+    if (!currentNodeId) {
+      continue;
+    }
+
+    const childEdges =
+      currentEdges.filter(
+        (edge) =>
+          !isMovementEdge(edge) &&
+          edge.source ===
+            currentNodeId,
+      );
+
+    for (const edge of childEdges) {
+      if (
+        descendantIds.has(
+          edge.target,
+        )
+      ) {
+        continue;
+      }
+
+      descendantIds.add(
+        edge.target,
+      );
+
+      nodesToCheck.push(
+        edge.target,
+      );
+    }
+  }
+
+  return descendantIds;
+}
 
 function wouldCreateCycle(
   parentId: string,
@@ -376,9 +499,13 @@ function wouldCreateCycle(
 
     visitedNodes.add(currentNodeId);
 
-    const childEdges = currentEdges.filter(
-      (edge) => edge.source === currentNodeId,
-    );
+    const childEdges =
+  currentEdges.filter(
+    (edge) =>
+      !isMovementEdge(edge) &&
+      edge.source ===
+        currentNodeId,
+  );
 
     for (const edge of childEdges) {
       if (edge.target === parentId) {
@@ -525,6 +652,12 @@ function layoutTreeComponent(
   currentEdges: readonly Edge[],
   startingNodeId: string,
 ): SyntaxNode[] {
+  const structuralEdges =
+    currentEdges.filter(
+      (edge) =>
+        !isMovementEdge(edge),
+    );
+
   const nodeById = new Map(
     currentNodes.map((node) => [
       node.id,
@@ -533,15 +666,15 @@ function layoutTreeComponent(
   );
 
   const connectedNodeIds =
-    getConnectedNodeIds(
-      startingNodeId,
-      currentEdges,
-    );
+  getConnectedNodeIds(
+    startingNodeId,
+    structuralEdges,
+  );
 
   const childEdgesByParent =
     new Map<string, Edge[]>();
 
-  for (const edge of currentEdges) {
+  for (const edge of structuralEdges) {
     if (
       !connectedNodeIds.has(
         edge.source,
@@ -621,7 +754,7 @@ function layoutTreeComponent(
   const nodesWithParents =
     new Set<string>();
 
-  for (const edge of currentEdges) {
+  for (const edge of structuralEdges) {
     if (
       connectedNodeIds.has(
         edge.source,
@@ -1012,6 +1145,12 @@ function createLatexDocument(
     );
   }
 
+  const structuralEdges =
+    currentEdges.filter(
+      (edge) =>
+        !isMovementEdge(edge),
+    );
+
   const nodeById = new Map(
     currentNodes.map((node) => [
       node.id,
@@ -1029,7 +1168,7 @@ function createLatexDocument(
     );
   }
 
-  for (const edge of currentEdges) {
+  for (const edge of structuralEdges) {
     if (
       !nodeById.has(edge.source) ||
       !nodeById.has(edge.target)
@@ -1097,7 +1236,7 @@ function createLatexDocument(
   function getOrderedChildEdges(
     parentId: string,
   ): Edge[] {
-    return currentEdges
+    return structuralEdges
       .filter(
         (edge) =>
           edge.source ===
@@ -1370,33 +1509,27 @@ function createSavedTreeSession(
   return {
     nodes: currentNodes.map(
       (node): SyntaxNode => ({
-        id: node.id,
-        type: "syntaxNode",
+        ...node,
         position: {
           ...node.position,
         },
         data: {
           ...node.data,
         },
+        selected: false,
+        dragging: false,
       }),
     ),
 
     edges: currentEdges.map(
       (edge): Edge => ({
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        sourceHandle:
-          edge.sourceHandle,
-        targetHandle:
-          edge.targetHandle,
-        type:
-          edge.type ?? "straight",
+        ...edge,
         data: edge.data
           ? {
               ...edge.data,
             }
           : undefined,
+        selected: false,
       }),
     ),
 
@@ -1582,23 +1715,8 @@ const dragStartSnapshotRef =
 const [undoCount, setUndoCount] =
   useState(0);
 
-  const handleNodeDragStart:
-  OnNodeDrag<SyntaxNode> =
-  useCallback(() => {
-    dragStartSnapshotRef.current =
-      createTreeSnapshot(
-        nodes,
-        edges,
-      );
-  }, [
-    edges,
-    nodes,
-  ]);
-
 /*
- * Save shortly after any node or edge
- * change. The delay prevents excessive
- * localStorage writes while dragging.
+ * Save shortly after any node or edge change.
  */
 useEffect(() => {
   const session =
@@ -1617,16 +1735,13 @@ useEffect(() => {
     }, 250);
 
   return () => {
-    window.clearTimeout(
-      saveTimer,
-    );
+    window.clearTimeout(saveTimer);
   };
 }, [nodes, edges]);
 
 /*
- * Save immediately when the page is
- * closed, refreshed, or navigated away
- * from.
+ * Save immediately when the page is closed,
+ * refreshed, or navigated away from.
  */
 useEffect(() => {
   function saveBeforeLeaving() {
@@ -1648,7 +1763,7 @@ useEffect(() => {
   };
 }, []);
 
-  const pushUndoSnapshot =
+const pushUndoSnapshot =
   useCallback(
     (snapshot: TreeSnapshot) => {
       undoStackRef.current = [
@@ -1704,16 +1819,34 @@ const undoLastAction =
     setNodes,
   ]);
 
-  useEffect(() => {
+useEffect(() => {
   function handleUndoShortcut(
     event: KeyboardEvent,
   ) {
+    const target = event.target;
+
+    const isEditingText =
+      target instanceof
+        HTMLInputElement ||
+      target instanceof
+        HTMLTextAreaElement ||
+      (
+        target instanceof HTMLElement &&
+        target.isContentEditable
+      );
+
+    if (isEditingText) {
+      return;
+    }
+
     const isUndoShortcut =
-      (event.ctrlKey ||
-        event.metaKey) &&
+      (
+        event.ctrlKey ||
+        event.metaKey
+      ) &&
+      !event.shiftKey &&
       event.key.toLowerCase() ===
-        "z" &&
-      !event.shiftKey;
+        "z";
 
     if (!isUndoShortcut) {
       return;
@@ -1736,27 +1869,41 @@ const undoLastAction =
   };
 }, [undoLastAction]);
 
-  const onConnect = useCallback(
-  (connection: Connection) => {
-    saveUndoSnapshot();
+const handleNodeDragStart:
+  OnNodeDrag<SyntaxNode> =
+  useCallback(() => {
+    dragStartSnapshotRef.current =
+      createTreeSnapshot(
+        nodes,
+        edges,
+      );
+  }, [
+    edges,
+    nodes,
+  ]);
 
-    setEdges((currentEdges) =>
-      addEdge(
-        {
-          ...connection,
-          type: "straight",
-        },
-        currentEdges,
-      ),
-    );
-  },
-  [
-    saveUndoSnapshot,
-    setEdges,
-  ],
-);
+const onConnect =
+  useCallback(
+    (connection: Connection) => {
+      saveUndoSnapshot();
 
-  function attachDirectly(
+      setEdges((currentEdges) =>
+        addEdge(
+          {
+            ...connection,
+            type: "straight",
+          },
+          currentEdges,
+        ),
+      );
+    },
+    [
+      saveUndoSnapshot,
+      setEdges,
+    ],
+  );
+
+function attachDirectly(
   attachment: PendingBarAttachment,
 ) {
   const parentNode = nodes.find(
@@ -1785,26 +1932,24 @@ const undoLastAction =
     return;
   }
 
-  
-
   const previousParentEdge =
     edges.find(
       (edge) =>
+        !isMovementEdge(edge) &&
         edge.target === draggedNode.id,
     );
 
-  /*
-   * A tree node may have only one parent.
-   */
   const edgesWithoutOldParent =
     edges.filter(
       (edge) =>
+        isMovementEdge(edge) ||
         edge.target !== draggedNode.id,
     );
 
   const existingSisterEdges =
     edgesWithoutOldParent.filter(
       (edge) =>
+        !isMovementEdge(edge) &&
         edge.source === parentNode.id,
     );
 
@@ -1818,28 +1963,24 @@ const undoLastAction =
   if (existingOrders.length > 0) {
     newSiblingOrder =
       attachment.placeOnLeft
-        ? Math.min(
-            ...existingOrders,
-          ) - 1
-        : Math.max(
-            ...existingOrders,
-          ) + 1;
+        ? Math.min(...existingOrders) - 1
+        : Math.max(...existingOrders) + 1;
   }
 
   const updatedEdges = addEdge(
-  {
-    id:
-      `edge-${parentNode.id}-${draggedNode.id}`,
-    source: parentNode.id,
-    target: draggedNode.id,
-    type: "straight",
-    data: {
-      siblingOrder:
-        newSiblingOrder,
+    {
+      id:
+        `edge-${parentNode.id}-${draggedNode.id}`,
+      source: parentNode.id,
+      target: draggedNode.id,
+      type: "straight",
+      data: {
+        siblingOrder:
+          newSiblingOrder,
+      },
     },
-  },
-  edgesWithoutOldParent,
-);
+    edgesWithoutOldParent,
+  );
 
   const nodeSnapshot =
     nodes.map((node) => {
@@ -1899,10 +2040,6 @@ function attachAsAdjunct(
     return;
   }
 
-  /*
-   * Prevent the dragged subtree from
-   * already containing the target bar.
-   */
   if (
     wouldCreateCycle(
       lowerBarNode.id,
@@ -1914,26 +2051,18 @@ function attachAsAdjunct(
     return;
   }
 
-  /*
-   * This is the edge connecting the old
-   * X′ to its current parent.
-   */
   const incomingBarEdge =
     edges.find(
       (edge) =>
-        edge.target ===
-        lowerBarNode.id,
+        !isMovementEdge(edge) &&
+        edge.target === lowerBarNode.id,
     );
 
-  /*
-   * The adjunct may already belong to
-   * another part of the tree.
-   */
   const previousAdjunctParentEdge =
     edges.find(
       (edge) =>
-        edge.target ===
-        adjunctNode.id,
+        !isMovementEdge(edge) &&
+        edge.target === adjunctNode.id,
     );
 
   const newBarId =
@@ -1941,11 +2070,8 @@ function attachAsAdjunct(
 
   nextNodeNumber.current += 1;
 
-  /*
-   * The new upper X′ uses the same label
-   * as the existing lower X′.
-   */
-  const newUpperBarNode: SyntaxNode = {
+  const newUpperBarNode:
+    SyntaxNode = {
     id: newBarId,
     type: "syntaxNode",
     position: {
@@ -1959,16 +2085,10 @@ function attachAsAdjunct(
     },
   };
 
-  /*
-   * Remove:
-   * 1. the adjunct's previous parent;
-   * 2. the old X′'s incoming edge.
-   *
-   * The old X′'s outgoing edges remain.
-   */
   let updatedEdges =
     edges.filter((edge) => {
       if (
+        !isMovementEdge(edge) &&
         edge.target === adjunctNode.id
       ) {
         return false;
@@ -1984,34 +2104,26 @@ function attachAsAdjunct(
       return true;
     });
 
-  /*
-   * Insert the new X′ where the old X′
-   * previously occurred.
-   */
   if (incomingBarEdge) {
     updatedEdges = addEdge(
-  {
-    id:
-      `edge-${incomingBarEdge.source}-${newBarId}`,
-    source:
-      incomingBarEdge.source,
-    target: newBarId,
-    type: "straight",
-    data: {
-      siblingOrder:
-        getSiblingOrder(
-          incomingBarEdge,
-        ),
-    },
-  },
-  updatedEdges,
-);
+      {
+        id:
+          `edge-${incomingBarEdge.source}-${newBarId}`,
+        source:
+          incomingBarEdge.source,
+        target: newBarId,
+        type: "straight",
+        data: {
+          siblingOrder:
+            getSiblingOrder(
+              incomingBarEdge,
+            ),
+        },
+      },
+      updatedEdges,
+    );
   }
 
-  /*
-   * The adjunct and old X′ become sisters
-   * under the new upper X′.
-   */
   const leftDaughterId =
     attachment.placeOnLeft
       ? adjunctNode.id
@@ -2023,34 +2135,35 @@ function attachAsAdjunct(
       : adjunctNode.id;
 
   updatedEdges = addEdge(
-  {
-    id:
-      `edge-${newBarId}-${leftDaughterId}`,
-    source: newBarId,
-    target: leftDaughterId,
-    type: "straight",
-    data: {
-      siblingOrder: 0,
+    {
+      id:
+        `edge-${newBarId}-${leftDaughterId}`,
+      source: newBarId,
+      target: leftDaughterId,
+      type: "straight",
+      data: {
+        siblingOrder: 0,
+      },
     },
-  },
-  updatedEdges,
-);
+    updatedEdges,
+  );
 
   updatedEdges = addEdge(
-  {
-    id:
-      `edge-${newBarId}-${rightDaughterId}`,
-    source: newBarId,
-    target: rightDaughterId,
-    type: "straight",
-    data: {
-      siblingOrder: 1,
+    {
+      id:
+        `edge-${newBarId}-${rightDaughterId}`,
+      source: newBarId,
+      target: rightDaughterId,
+      type: "straight",
+      data: {
+        siblingOrder: 1,
+      },
     },
-  },
-  updatedEdges,
-);
+    updatedEdges,
+  );
 
-  const nodeSnapshot: SyntaxNode[] = [
+  const nodeSnapshot:
+    SyntaxNode[] = [
     ...nodes.map((node) => {
       if (
         node.id !== adjunctNode.id
@@ -2074,10 +2187,6 @@ function attachAsAdjunct(
       newBarId,
     );
 
-  /*
-   * Rebalance the adjunct's old tree if
-   * it was moved from somewhere else.
-   */
   if (
     previousAdjunctParentEdge &&
     previousAdjunctParentEdge.source !==
@@ -2096,23 +2205,323 @@ function attachAsAdjunct(
   setPendingBarAttachment(null);
 }
 
-  const handleNodeDragStop:
+function moveAttachedSubtree(
+  targetParentNode: SyntaxNode,
+  draggedNode: SyntaxNode,
+  placeOnLeft: boolean,
+  dragStartSnapshot:
+    TreeSnapshot | null,
+) {
+  const previousParentEdge =
+    edges.find(
+      (edge) =>
+        !isMovementEdge(edge) &&
+        edge.target === draggedNode.id,
+    );
+
+  if (!previousParentEdge) {
+    return;
+  }
+
+  const subtreeNodeIds =
+    getStructuralDescendantIds(
+      draggedNode.id,
+      edges,
+    );
+
+  const originalNodes =
+    dragStartSnapshot?.nodes ??
+    nodes;
+
+  const originalNodeById =
+    new Map(
+      originalNodes.map(
+        (node) => [
+          node.id,
+          node,
+        ],
+      ),
+    );
+
+  const originalRootNode =
+    originalNodeById.get(
+      draggedNode.id,
+    );
+
+  if (!originalRootNode) {
+    return;
+  }
+
+  const cloneOffsetX =
+    draggedNode.position.x -
+    originalRootNode.position.x;
+
+  const cloneOffsetY =
+    draggedNode.position.y -
+    originalRootNode.position.y;
+
+  const clonedIdByOriginalId =
+    new Map<string, string>();
+
+  for (
+    const originalNodeId
+    of subtreeNodeIds
+  ) {
+    const clonedNodeId =
+      `syntax-node-${nextNodeNumber.current}`;
+
+    nextNodeNumber.current += 1;
+
+    clonedIdByOriginalId.set(
+      originalNodeId,
+      clonedNodeId,
+    );
+  }
+
+  const clonedNodes:
+    SyntaxNode[] = [];
+
+  for (
+    const originalNodeId
+    of subtreeNodeIds
+  ) {
+    const originalNode =
+      originalNodeById.get(
+        originalNodeId,
+      );
+
+    const clonedNodeId =
+      clonedIdByOriginalId.get(
+        originalNodeId,
+      );
+
+    if (
+      !originalNode ||
+      !clonedNodeId
+    ) {
+      continue;
+    }
+
+    clonedNodes.push({
+      id: clonedNodeId,
+      type: "syntaxNode",
+      position: {
+        x:
+          originalNode.position.x +
+          cloneOffsetX,
+        y:
+          originalNode.position.y +
+          cloneOffsetY,
+      },
+      data: {
+        ...originalNode.data,
+        isLowerCopy: false,
+      },
+      draggable: true,
+      selected: false,
+      dragging: false,
+    });
+  }
+
+  const clonedTreeEdges:
+    Edge[] = [];
+
+  for (const edge of edges) {
+    if (isMovementEdge(edge)) {
+      continue;
+    }
+
+    if (
+      !subtreeNodeIds.has(
+        edge.source,
+      ) ||
+      !subtreeNodeIds.has(
+        edge.target,
+      )
+    ) {
+      continue;
+    }
+
+    const clonedSourceId =
+      clonedIdByOriginalId.get(
+        edge.source,
+      );
+
+    const clonedTargetId =
+      clonedIdByOriginalId.get(
+        edge.target,
+      );
+
+    if (
+      !clonedSourceId ||
+      !clonedTargetId
+    ) {
+      continue;
+    }
+
+    clonedTreeEdges.push({
+      id:
+        `edge-${clonedSourceId}-${clonedTargetId}`,
+      source: clonedSourceId,
+      target: clonedTargetId,
+      sourceHandle:
+        edge.sourceHandle,
+      targetHandle:
+        edge.targetHandle,
+      type:
+        edge.type ?? "straight",
+      data: {
+        ...edge.data,
+        edgeKind: "tree",
+      },
+    });
+  }
+
+  const clonedRootId =
+    clonedIdByOriginalId.get(
+      draggedNode.id,
+    );
+
+  if (!clonedRootId) {
+    return;
+  }
+
+  const existingSisterEdges =
+    edges.filter(
+      (edge) =>
+        !isMovementEdge(edge) &&
+        edge.source ===
+          targetParentNode.id,
+    );
+
+  const existingOrders =
+    existingSisterEdges.map(
+      getSiblingOrder,
+    );
+
+  let siblingOrder = 0;
+
+  if (existingOrders.length > 0) {
+    siblingOrder =
+      placeOnLeft
+        ? Math.min(...existingOrders) - 1
+        : Math.max(...existingOrders) + 1;
+  }
+
+  const higherCopyEdge:
+    Edge = {
+    id:
+      `edge-${targetParentNode.id}-${clonedRootId}`,
+    source:
+      targetParentNode.id,
+    target: clonedRootId,
+    type: "straight",
+    data: {
+      edgeKind: "tree",
+      siblingOrder,
+    },
+  };
+
+  const movementArrow:
+    Edge = {
+    id:
+      `movement-${draggedNode.id}-${clonedRootId}`,
+    source: draggedNode.id,
+    target: clonedRootId,
+    type: "movement",
+    data: {
+      edgeKind: "movement",
+    },
+    markerEnd: {
+      type:
+        MarkerType.ArrowClosed,
+      color: "#8b2f3f",
+      width: 18,
+      height: 18,
+    },
+    style: {
+      stroke: "#8b2f3f",
+      strokeWidth: 2.25,
+      strokeDasharray: "7 4",
+    },
+    zIndex: 3,
+    selectable: false,
+  };
+
+  const lowerCopyNodes =
+    nodes.map((node) => {
+      if (
+        !subtreeNodeIds.has(
+          node.id,
+        )
+      ) {
+        return node;
+      }
+
+      const originalNode =
+        originalNodeById.get(
+          node.id,
+        );
+
+      return {
+        ...node,
+        position: originalNode
+          ? {
+              ...originalNode.position,
+            }
+          : node.position,
+        data: {
+          ...node.data,
+          isLowerCopy: true,
+        },
+        draggable: false,
+        selected: false,
+        dragging: false,
+      };
+    });
+
+  const updatedNodes = [
+    ...lowerCopyNodes,
+    ...clonedNodes,
+  ];
+
+  const updatedEdges = [
+    ...edges,
+    ...clonedTreeEdges,
+    higherCopyEdge,
+    movementArrow,
+  ];
+
+  const balancedNodes =
+    layoutTreeComponent(
+      updatedNodes,
+      updatedEdges,
+      targetParentNode.id,
+    );
+
+  setNodes(balancedNodes);
+  setEdges(updatedEdges);
+  setPendingBarAttachment(null);
+}
+
+const handleNodeDragStop:
   OnNodeDrag<SyntaxNode> =
   (_event, draggedNode) => {
     if (!reactFlowInstance) {
       return;
     }
+
     const dragStartSnapshot =
-  dragStartSnapshotRef.current;
+      dragStartSnapshotRef.current;
 
-if (dragStartSnapshot) {
-  pushUndoSnapshot(
-    dragStartSnapshot,
-  );
+    if (dragStartSnapshot) {
+      pushUndoSnapshot(
+        dragStartSnapshot,
+      );
+    }
 
-  dragStartSnapshotRef.current =
-    null;
-}
+    dragStartSnapshotRef.current =
+      null;
 
     const intersectingNodes =
       reactFlowInstance
@@ -2127,7 +2536,8 @@ if (dragStartSnapshot) {
           node.id !== draggedNode.id &&
           node.data.kind !== "word" &&
           node.data.kind !==
-            "wordInput",
+            "wordInput" &&
+          !node.data.isLowerCopy,
       );
 
     if (
@@ -2154,10 +2564,6 @@ if (dragStartSnapshot) {
       draggedNode.position.y +
       draggedHeight / 2;
 
-    /*
-     * If several nodes overlap, use the
-     * node closest to the dragged node.
-     */
     const parentNode =
       possibleParents.sort(
         (
@@ -2234,7 +2640,8 @@ if (dragStartSnapshot) {
       ) /
         2;
 
-    const attachment: PendingBarAttachment = {
+    const attachment:
+      PendingBarAttachment = {
       parentId: parentNode.id,
       draggedId: draggedNode.id,
       placeOnLeft:
@@ -2245,10 +2652,57 @@ if (dragStartSnapshot) {
       },
     };
 
-    /*
-     * Bar levels require a complement/
-     * adjunct decision.
-     */
+    const previousParentEdge =
+      edges.find(
+        (edge) =>
+          !isMovementEdge(edge) &&
+          edge.target ===
+            draggedNode.id,
+      );
+
+    const originalDraggedNode =
+      dragStartSnapshot?.nodes.find(
+        (node) =>
+          node.id ===
+            draggedNode.id,
+      );
+
+    const originalY =
+      originalDraggedNode
+        ?.position.y ??
+      draggedNode.position.y;
+
+    const targetIsHigher =
+      parentNode.position.y <
+      originalY;
+
+    const targetIsDifferent =
+      Boolean(
+        previousParentEdge &&
+        previousParentEdge.source !==
+          parentNode.id,
+      );
+
+    const shouldCreateMovement =
+      Boolean(
+        previousParentEdge &&
+        targetIsDifferent &&
+        targetIsHigher &&
+        !draggedNode.data
+          .isLowerCopy,
+      );
+
+    if (shouldCreateMovement) {
+      moveAttachedSubtree(
+        parentNode,
+        draggedNode,
+        attachment.placeOnLeft,
+        dragStartSnapshot,
+      );
+
+      return;
+    }
+
     if (
       isBarLevelLabel(
         parentNode.data.label,
@@ -2261,9 +2715,6 @@ if (dragStartSnapshot) {
       return;
     }
 
-    /*
-     * Other node types attach normally.
-     */
     attachDirectly(attachment);
   };
 
@@ -2319,10 +2770,12 @@ if (dragStartSnapshot) {
   ];
 
   const existingSisterEdges =
-    edgeSnapshot.filter(
-      (edge) =>
-        edge.source === parentNode.id,
-    );
+  edgeSnapshot.filter(
+    (edge) =>
+      !isMovementEdge(edge) &&
+      edge.source ===
+        parentNode.id,
+  );
 
   const existingOrders =
     existingSisterEdges.map(
@@ -2799,7 +3252,13 @@ if (dragStartSnapshot) {
    * so node borders and branch lines are
    * not clipped.
    */
-  const imagePadding = 10;
+  const hasMovementArrow =
+    edges.some(isMovementEdge);
+
+  const imagePadding =
+    hasMovementArrow
+      ? 130
+      : 10;
 
   const nodesBounds =
     getNodesBounds(nodes);
@@ -3326,6 +3785,7 @@ function exportTreeAsLatex() {
     nodes={nodes}
     edges={edges}
     nodeTypes={nodeTypes}
+    edgeTypes={edgeTypes}
     onNodesChange={onNodesChange}
     onEdgesChange={onEdgesChange}
     onConnect={onConnect}
