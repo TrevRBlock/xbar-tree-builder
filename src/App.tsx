@@ -1084,6 +1084,41 @@ function SyntaxNodeComponent({
   );
 }
 
+function TreeEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  markerEnd,
+}: EdgeProps) {
+  const treePath = [
+    `M ${sourceX},${sourceY}`,
+    `L ${targetX},${targetY}`,
+  ].join(" ");
+
+  return (
+    <BaseEdge
+      id={id}
+      path={treePath}
+      markerEnd={markerEnd}
+      interactionWidth={16}
+      className="tree-edge-path"
+      style={{
+        stroke: "#20242a",
+        strokeWidth:
+          TREE_EDGE_STROKE_WIDTH,
+        strokeLinecap: "round",
+        strokeLinejoin: "round",
+        vectorEffect:
+          "non-scaling-stroke",
+        shapeRendering:
+          "geometricPrecision",
+      }}
+    />
+  );
+}
+
 function MovementEdge({
   id,
   sourceX,
@@ -1151,6 +1186,7 @@ function MovementEdge({
 
 const edgeTypes = {
   movement: MovementEdge,
+  tree: TreeEdge,
 };
 
 const nodeTypes = {
@@ -1218,6 +1254,512 @@ function isHeadToLexicalEdge(
         "wordInput"
     )
   );
+}
+
+interface DeleteSelectionResult {
+  nodes: SyntaxNode[];
+  edges: Edge[];
+  changed: boolean;
+}
+
+interface PromotedDaughter {
+  nodeId: string;
+  boundaryEdge: Edge;
+}
+
+interface DeletedRootReplacement {
+  incomingEdge: Edge;
+  promotedDaughters:
+    PromotedDaughter[];
+}
+
+function deleteSelectionAndPromoteDaughters(
+  currentNodes: readonly SyntaxNode[],
+  currentEdges: readonly Edge[],
+): DeleteSelectionResult {
+  const selectedNodeIds =
+    new Set(
+      currentNodes
+        .filter(
+          (node) => node.selected,
+        )
+        .map(
+          (node) => node.id,
+        ),
+    );
+
+  const selectedEdgeIds =
+    new Set(
+      currentEdges
+        .filter(
+          (edge) => edge.selected,
+        )
+        .map(
+          (edge) => edge.id,
+        ),
+    );
+
+  if (
+    selectedNodeIds.size === 0 &&
+    selectedEdgeIds.size === 0
+  ) {
+    return {
+      nodes: [...currentNodes],
+      edges: [...currentEdges],
+      changed: false,
+    };
+  }
+
+  const nodeById =
+    new Map(
+      currentNodes.map(
+        (node) => [
+          node.id,
+          node,
+        ],
+      ),
+    );
+
+  const structuralEdges =
+    currentEdges.filter(
+      (edge) =>
+        !isMovementEdge(edge),
+    );
+
+  const incomingEdgeByTarget =
+    new Map<string, Edge>();
+
+  const childEdgesByParent =
+    new Map<string, Edge[]>();
+
+  for (const edge of structuralEdges) {
+    if (
+      !incomingEdgeByTarget.has(
+        edge.target,
+      )
+    ) {
+      incomingEdgeByTarget.set(
+        edge.target,
+        edge,
+      );
+    }
+
+    const childEdges =
+      childEdgesByParent.get(
+        edge.source,
+      ) ?? [];
+
+    childEdgesByParent.set(
+      edge.source,
+      [
+        ...childEdges,
+        edge,
+      ],
+    );
+  }
+
+  for (
+    const childEdges
+    of childEdgesByParent.values()
+  ) {
+    childEdges.sort(
+      (
+        firstEdge,
+        secondEdge,
+      ) => {
+        const orderDifference =
+          getSiblingOrder(
+            firstEdge,
+          ) -
+          getSiblingOrder(
+            secondEdge,
+          );
+
+        if (orderDifference !== 0) {
+          return orderDifference;
+        }
+
+        const firstNode =
+          nodeById.get(
+            firstEdge.target,
+          );
+
+        const secondNode =
+          nodeById.get(
+            secondEdge.target,
+          );
+
+        return (
+          (
+            firstNode?.position.x ??
+            0
+          ) -
+          (
+            secondNode?.position.x ??
+            0
+          )
+        );
+      },
+    );
+  }
+
+  const highestSelectedNodeIds =
+    [...selectedNodeIds].filter(
+      (nodeId) => {
+        const incomingEdge =
+          incomingEdgeByTarget.get(
+            nodeId,
+          );
+
+        return (
+          !incomingEdge ||
+          !selectedNodeIds.has(
+            incomingEdge.source,
+          )
+        );
+      },
+    );
+
+  function collectPromotedDaughters(
+    selectedRootId: string,
+  ): PromotedDaughter[] {
+    const promotedDaughters:
+      PromotedDaughter[] = [];
+
+    const activeNodeIds =
+      new Set<string>();
+
+    function visitSelectedNode(
+      nodeId: string,
+    ) {
+      if (
+        activeNodeIds.has(nodeId)
+      ) {
+        return;
+      }
+
+      activeNodeIds.add(nodeId);
+
+      const childEdges =
+        childEdgesByParent.get(
+          nodeId,
+        ) ?? [];
+
+      for (const childEdge of childEdges) {
+        if (
+          selectedNodeIds.has(
+            childEdge.target,
+          )
+        ) {
+          visitSelectedNode(
+            childEdge.target,
+          );
+
+          continue;
+        }
+
+        promotedDaughters.push({
+          nodeId:
+            childEdge.target,
+          boundaryEdge:
+            childEdge,
+        });
+      }
+
+      activeNodeIds.delete(nodeId);
+    }
+
+    visitSelectedNode(
+      selectedRootId,
+    );
+
+    return promotedDaughters;
+  }
+
+  const replacementsByParent =
+    new Map<
+      string,
+      DeletedRootReplacement[]
+    >();
+
+  for (
+    const selectedRootId
+    of highestSelectedNodeIds
+  ) {
+    const incomingEdge =
+      incomingEdgeByTarget.get(
+        selectedRootId,
+      );
+
+    if (!incomingEdge) {
+      /*
+       * Deleting a root leaves each
+       * surviving frontier daughter as
+       * an independent root.
+       */
+      continue;
+    }
+
+    const existingReplacements =
+      replacementsByParent.get(
+        incomingEdge.source,
+      ) ?? [];
+
+    replacementsByParent.set(
+      incomingEdge.source,
+      [
+        ...existingReplacements,
+        {
+          incomingEdge,
+          promotedDaughters:
+            collectPromotedDaughters(
+              selectedRootId,
+            ),
+        },
+      ],
+    );
+  }
+
+  /*
+   * Remove every selected node, every
+   * selected edge, and every edge touching
+   * a selected node. Movement edges with a
+   * deleted endpoint are removed as well.
+   */
+  let nextEdges =
+    currentEdges.filter(
+      (edge) =>
+        !selectedEdgeIds.has(
+          edge.id,
+        ) &&
+        !selectedNodeIds.has(
+          edge.source,
+        ) &&
+        !selectedNodeIds.has(
+          edge.target,
+        ),
+    );
+
+  /*
+   * Rebuild each affected surviving
+   * parent's daughter list. A deleted
+   * subtree's surviving frontier daughters
+   * occupy the same sister position as the
+   * highest deleted node.
+   */
+  for (
+    const [
+      parentId,
+      replacements,
+    ]
+    of replacementsByParent
+  ) {
+    const replacementByIncomingEdgeId =
+      new Map(
+        replacements.map(
+          (replacement) => [
+            replacement
+              .incomingEdge.id,
+            replacement,
+          ],
+        ),
+      );
+
+    const originalParentEdges =
+      structuralEdges
+        .filter(
+          (edge) =>
+            edge.source ===
+              parentId,
+        )
+        .sort(
+          (
+            firstEdge,
+            secondEdge,
+          ) => {
+            const orderDifference =
+              getSiblingOrder(
+                firstEdge,
+              ) -
+              getSiblingOrder(
+                secondEdge,
+              );
+
+            if (
+              orderDifference !== 0
+            ) {
+              return orderDifference;
+            }
+
+            const firstNode =
+              nodeById.get(
+                firstEdge.target,
+              );
+
+            const secondNode =
+              nodeById.get(
+                secondEdge.target,
+              );
+
+            return (
+              (
+                firstNode?.position.x ??
+                0
+              ) -
+              (
+                secondNode?.position.x ??
+                0
+              )
+            );
+          },
+        );
+
+    const rebuiltChildEntries:
+      Array<{
+        nodeId: string;
+        edgeTemplate: Edge;
+        promoted: boolean;
+      }> = [];
+
+    for (
+      const originalEdge
+      of originalParentEdges
+    ) {
+      const replacement =
+        replacementByIncomingEdgeId.get(
+          originalEdge.id,
+        );
+
+      if (replacement) {
+        for (
+          const promotedDaughter
+          of replacement
+            .promotedDaughters
+        ) {
+          rebuiltChildEntries.push({
+            nodeId:
+              promotedDaughter.nodeId,
+            edgeTemplate:
+              promotedDaughter
+                .boundaryEdge,
+            promoted: true,
+          });
+        }
+
+        continue;
+      }
+
+      if (
+        selectedNodeIds.has(
+          originalEdge.target,
+        ) ||
+        selectedEdgeIds.has(
+          originalEdge.id,
+        )
+      ) {
+        continue;
+      }
+
+      rebuiltChildEntries.push({
+        nodeId:
+          originalEdge.target,
+        edgeTemplate:
+          originalEdge,
+        promoted: false,
+      });
+    }
+
+    nextEdges =
+      nextEdges.filter(
+        (edge) =>
+          isMovementEdge(edge) ||
+          edge.source !== parentId,
+      );
+
+    rebuiltChildEntries.forEach(
+      (
+        childEntry,
+        siblingOrder,
+      ) => {
+        if (childEntry.promoted) {
+          nextEdges.push({
+            id:
+              `promoted-${parentId}-${childEntry.nodeId}-${siblingOrder}`,
+            source:
+              parentId,
+            target:
+              childEntry.nodeId,
+            type:
+              childEntry
+                .edgeTemplate.type ??
+              "straight",
+            targetHandle:
+              childEntry
+                .edgeTemplate
+                .targetHandle,
+            hidden:
+              Boolean(
+                childEntry
+                  .edgeTemplate.hidden,
+              ),
+            style:
+              childEntry
+                .edgeTemplate.style,
+            data: {
+              edgeKind: "tree",
+              siblingOrder,
+            },
+          });
+
+          return;
+        }
+
+        nextEdges.push({
+          ...childEntry.edgeTemplate,
+          selected: false,
+          data: {
+            ...childEntry
+              .edgeTemplate.data,
+            edgeKind:
+              childEntry
+                .edgeTemplate.data
+                ?.edgeKind ??
+              "tree",
+            siblingOrder,
+          },
+        });
+      },
+    );
+  }
+
+  const nextNodes =
+    currentNodes
+      .filter(
+        (node) =>
+          !selectedNodeIds.has(
+            node.id,
+          ),
+      )
+      .map(
+        (node): SyntaxNode => ({
+          ...node,
+          selected: false,
+          dragging: false,
+        }),
+      );
+
+  nextEdges = nextEdges.map(
+    (edge): Edge => ({
+      ...edge,
+      selected: false,
+    }),
+  );
+
+  return {
+    nodes: nextNodes,
+    edges: nextEdges,
+    changed: true,
+  };
 }
 
 function getStructuralDescendantIds(
@@ -1661,7 +2203,7 @@ function wouldCreateCycle(
 }
 
 const SISTER_GAP = 36;
-const LEVEL_GAP = 85;
+const LEVEL_GAP = 55;
 
 /*
  * Boxless mode uses substantially less
@@ -1678,6 +2220,15 @@ const BOXLESS_LEVEL_GAP = 42;
  * against the bottom of its phrase parent.
  */
 const MOVEMENT_SUMMARY_APEX_OFFSET = 54;
+
+/*
+ * Every ordinary structural branch is
+ * rendered by the same custom edge component.
+ * vectorEffect keeps this width constant when
+ * React Flow zooms or PNG export transforms
+ * the SVG viewport.
+ */
+const TREE_EDGE_STROKE_WIDTH = 2;
 
 function getSyntaxNodeWidth(
   node: SyntaxNode,
@@ -1840,21 +2391,34 @@ function createCollapsedBarStructure(
         );
 
       const outgoingEdges =
-        structuralEdges.filter(
-          (edge) =>
-            edge.source === nodeId,
-        );
+        structuralEdges
+          .filter(
+            (edge) =>
+              edge.source === nodeId,
+          )
+          .sort(
+            (
+              firstEdge,
+              secondEdge,
+            ) =>
+              getSiblingOrder(
+                firstEdge,
+              ) -
+              getSiblingOrder(
+                secondEdge,
+              ),
+          );
 
       /*
-       * A removable bar must have exactly
-       * one parent and exactly one daughter.
+       * The bar must have one structural
+       * parent and at least one daughter.
        * Root bar levels are retained because
        * there is no parent to receive the
-       * promoted daughter.
+       * promoted daughters.
        */
       if (
         incomingEdges.length !== 1 ||
-        outgoingEdges.length !== 1
+        outgoingEdges.length === 0
       ) {
         continue;
       }
@@ -1862,57 +2426,118 @@ function createCollapsedBarStructure(
       const incomingEdge =
         incomingEdges[0];
 
-      const outgoingEdge =
-        outgoingEdges[0];
+      const parentOutgoingEdges =
+        structuralEdges.filter(
+          (edge) =>
+            edge.source ===
+              incomingEdge.source,
+        );
 
+      const hasOneDaughter =
+        outgoingEdges.length === 1;
+
+      const isOnlyDaughterOfParent =
+        parentOutgoingEdges.length === 1;
+
+      /*
+       * Collapse the X′ level when either:
+       *
+       * 1. the X′ itself has one daughter; or
+       * 2. the X′ is the only daughter of its
+       *    parent, even when the X′ has two
+       *    or more daughters.
+       */
       if (
-        incomingEdge.source ===
-          outgoingEdge.target ||
-        incomingEdge.source === nodeId ||
-        outgoingEdge.target === nodeId
+        !hasOneDaughter &&
+        !isOnlyDaughterOfParent
       ) {
         continue;
       }
 
-      const bypassEdge: Edge = {
-        id:
-          `collapsed-${incomingEdge.id}-${outgoingEdge.id}`,
-        source:
-          incomingEdge.source,
-        target:
-          outgoingEdge.target,
-        type:
-          incomingEdge.type ??
-          outgoingEdge.type ??
-          "straight",
-        sourceHandle:
-          incomingEdge.sourceHandle,
-        targetHandle:
-          outgoingEdge.targetHandle,
-        hidden:
-          Boolean(incomingEdge.hidden) &&
-          Boolean(outgoingEdge.hidden),
-        data: {
-          ...incomingEdge.data,
-          edgeKind: "tree",
-          siblingOrder:
-            getSiblingOrder(
-              incomingEdge,
-            ),
-          collapsedBarNodeId:
-            nodeId,
-        },
-      };
+      const createsInvalidLoop =
+        outgoingEdges.some(
+          (outgoingEdge) =>
+            incomingEdge.source ===
+              outgoingEdge.target ||
+            incomingEdge.source ===
+              nodeId ||
+            outgoingEdge.target ===
+              nodeId,
+        );
+
+      if (createsInvalidLoop) {
+        continue;
+      }
+
+      /*
+       * Promote every daughter to the removed
+       * bar level's parent. When there is only
+       * one daughter, it inherits the bar's
+       * former sister position. When the bar
+       * was the parent's only daughter, its
+       * daughters retain their internal order.
+       */
+      const bypassEdges =
+        outgoingEdges.map(
+          (
+            outgoingEdge,
+            daughterIndex,
+          ): Edge => ({
+            id:
+              `collapsed-${incomingEdge.id}-${outgoingEdge.id}`,
+            source:
+              incomingEdge.source,
+            target:
+              outgoingEdge.target,
+            type:
+              incomingEdge.type ??
+              outgoingEdge.type ??
+              "straight",
+            sourceHandle:
+              incomingEdge.sourceHandle,
+            targetHandle:
+              outgoingEdge.targetHandle,
+            hidden:
+              Boolean(
+                incomingEdge.hidden,
+              ) &&
+              Boolean(
+                outgoingEdge.hidden,
+              ),
+            style:
+              outgoingEdge.style ??
+              incomingEdge.style,
+            data: {
+              ...incomingEdge.data,
+              edgeKind: "tree",
+              siblingOrder:
+                hasOneDaughter
+                  ? getSiblingOrder(
+                      incomingEdge,
+                    )
+                  : daughterIndex,
+              collapsedBarNodeId:
+                nodeId,
+            },
+          }),
+        );
+
+      const removedEdgeIds =
+        new Set([
+          incomingEdge.id,
+          ...outgoingEdges.map(
+            (edge) => edge.id,
+          ),
+        ]);
 
       effectiveEdges = [
         ...effectiveEdges.filter(
           (edge) =>
-            edge.id !==
-              incomingEdge.id &&
-            edge.id !==
-              outgoingEdge.id,
+            !removedEdgeIds.has(
+              edge.id,
+            ),
         ),
-        bypassEdge,
+        ...bypassEdges,
       ];
 
       visibleNodeIds.delete(nodeId);
@@ -3504,7 +4129,6 @@ function createLatexDocument(
     "    line width=0.8pt,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
-    "    font=\\sffamily",
     "  },",
     "  syntax head/.style={",
     "    draw=xbarpurple,",
@@ -3513,7 +4137,6 @@ function createLatexDocument(
     "    line width=0.8pt,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
-    "    font=\\sffamily",
     "  },",
     "  syntax word/.style={",
     "    draw=xbaryellow,",
@@ -3522,28 +4145,24 @@ function createLatexDocument(
     "    line width=0.8pt,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
-    "    font=\\rmfamily",
     "  },",
     "  syntax phrase plain/.style={",
     "    draw=none,",
     "    fill=none,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
-    "    font=\\sffamily",
     "  },",
     "  syntax head plain/.style={",
     "    draw=none,",
     "    fill=none,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
-    "    font=\\sffamily",
     "  },",
     "  syntax word plain/.style={",
     "    draw=none,",
     "    fill=none,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
-    "    font=\\rmfamily",
     "  },",
     "  syntax lower copy/.style={",
     "    dashed,",
@@ -4082,6 +4701,11 @@ const [
   loadCollapseUnusedBarLevels,
 );
 
+const [
+  selectionBoxActive,
+  setSelectionBoxActive,
+] = useState(false);
+
 useEffect(() => {
   try {
     window.localStorage.setItem(
@@ -4571,7 +5195,11 @@ const onConnect =
         addEdge(
           {
             ...connection,
-            type: "straight",
+            type: "tree",
+            data: {
+              edgeKind: "tree",
+              siblingOrder: 0,
+            },
           },
           currentEdges,
         ),
@@ -6895,56 +7523,105 @@ function attachCreatedHeadAsAdjunct(
   setPendingBarAttachment(null);
 }
 
-  function deleteSelected() {
-  const hasSelectedNode =
-    nodes.some(
-      (node) => node.selected,
+  const deleteSelected =
+  useCallback(() => {
+    const deletionResult =
+      deleteSelectionAndPromoteDaughters(
+        nodes,
+        edges,
+      );
+
+    if (!deletionResult.changed) {
+      return;
+    }
+
+    saveUndoSnapshot();
+
+    setPendingBarAttachment(null);
+
+    setNodes(
+      deletionResult.nodes,
     );
 
-  const hasSelectedEdge =
-    edges.some(
-      (edge) => edge.selected,
+    setEdges(
+      deletionResult.edges,
     );
 
-  if (
-    !hasSelectedNode &&
-    !hasSelectedEdge
-  ) {
-    return;
-  }
+    requestAnimationFrame(() => {
+      scheduleAutoBalance();
+    });
+  }, [
+    edges,
+    nodes,
+    saveUndoSnapshot,
+    scheduleAutoBalance,
+    setEdges,
+    setNodes,
+  ]);
 
-  saveUndoSnapshot();
+  useEffect(() => {
+    function handleDeleteShortcut(
+      event: KeyboardEvent,
+    ) {
+      if (
+        event.key !== "Delete" &&
+        event.key !== "Backspace"
+      ) {
+        return;
+      }
 
-  const selectedNodeIds =
-    new Set(
-      nodes
-        .filter(
+      const target =
+        event.target;
+
+      const isEditingText =
+        target instanceof
+          HTMLInputElement ||
+        target instanceof
+          HTMLTextAreaElement ||
+        (
+          target instanceof
+            HTMLElement &&
+          target.isContentEditable
+        );
+
+      if (isEditingText) {
+        return;
+      }
+
+      const hasSelection =
+        nodes.some(
           (node) => node.selected,
-        )
-        .map(
-          (node) => node.id,
-        ),
+        ) ||
+        edges.some(
+          (edge) => edge.selected,
+        );
+
+      if (!hasSelection) {
+        return;
+      }
+
+      event.preventDefault();
+
+      deleteSelected();
+    }
+
+    window.addEventListener(
+      "keydown",
+      handleDeleteShortcut,
     );
 
-  setNodes((currentNodes) =>
-    currentNodes.filter(
-      (node) => !node.selected,
-    ),
-  );
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleDeleteShortcut,
+      );
+    };
+  }, [
+    deleteSelected,
+    edges,
+    nodes,
+  ]);
 
-  setEdges((currentEdges) =>
-    currentEdges.filter(
-      (edge) =>
-        !edge.selected &&
-        !selectedNodeIds.has(
-          edge.source,
-        ) &&
-        !selectedNodeIds.has(
-          edge.target,
-        ),
-    ),
-  );
-}
 
   async function exportTreeAsPng() {
   if (displayedNodes.length === 0) {
@@ -7100,6 +7777,19 @@ function exportTreeAsLatex() {
   }
 }
 
+  const selectedHeadNodes =
+    useMemo(
+      () =>
+        nodes.filter(
+          (node) =>
+            node.selected &&
+            node.data.kind ===
+              "head" &&
+            !node.data.isLowerCopy,
+        ),
+      [nodes],
+    );
+
   const selectedFormattableNodes =
     useMemo(
       () =>
@@ -7111,6 +7801,109 @@ function exportTreeAsLatex() {
         ),
       [nodes],
     );
+
+  function addBlankLexicalBoxes() {
+    if (
+      selectedHeadNodes.length === 0
+    ) {
+      return;
+    }
+
+    saveUndoSnapshot();
+
+    const placementLevelGap =
+      showNodeBoxes
+        ? LEVEL_GAP
+        : BOXLESS_LEVEL_GAP;
+
+    const createdNodes:
+      SyntaxNode[] = [];
+
+    const createdEdges:
+      Edge[] = [];
+
+    for (
+      const headNode
+      of selectedHeadNodes
+    ) {
+      const existingChildEdges =
+        edges.filter(
+          (edge) =>
+            !isMovementEdge(edge) &&
+            edge.source ===
+              headNode.id,
+        );
+
+      const existingSiblingOrders =
+        existingChildEdges.map(
+          getSiblingOrder,
+        );
+
+      const newSiblingOrder =
+        existingSiblingOrders.length > 0
+          ? Math.max(
+              ...existingSiblingOrders,
+            ) + 1
+          : 0;
+
+      const lexicalNodeId =
+        `syntax-node-${nextNodeNumber.current}`;
+
+      nextNodeNumber.current += 1;
+
+      createdNodes.push({
+        id: lexicalNodeId,
+        type: "syntaxNode",
+        position: {
+          x:
+            headNode.position.x +
+            newSiblingOrder * 28,
+          y:
+            headNode.position.y +
+            placementLevelGap,
+        },
+        data: {
+          label: "",
+          kind: "wordInput",
+        },
+        selected: false,
+        dragging: false,
+      });
+
+      createdEdges.push({
+        id:
+          `edge-${headNode.id}-${lexicalNodeId}`,
+        source: headNode.id,
+        target: lexicalNodeId,
+        type: "tree",
+        data: {
+          edgeKind: "tree",
+          siblingOrder:
+            newSiblingOrder,
+        },
+      });
+    }
+
+    setNodes([
+      ...nodes,
+      ...createdNodes,
+    ]);
+
+    setEdges([
+      ...edges,
+      ...createdEdges,
+    ]);
+
+    /*
+     * The temporary positions make the new
+     * boxes visible immediately. The normal
+     * two-frame balancer then measures and
+     * places all lexical daughters evenly.
+     */
+    requestAnimationFrame(() => {
+      scheduleAutoBalance();
+    });
+  }
 
   const selectedNodesAreBold =
     selectedFormattableNodes.length >
@@ -7290,18 +8083,42 @@ function exportTreeAsLatex() {
     useMemo(
       () =>
         collapsedDisplayStructure
-          .edges.map((edge) => ({
-            ...edge,
-            hidden:
-              Boolean(edge.hidden) ||
-              (
-                !showHeadWordLines &&
-                isHeadToLexicalEdge(
-                  edge,
-                  displayedNodes,
-                )
-              ),
-          })),
+          .edges.map((edge) => {
+            const movementEdge =
+              isMovementEdge(edge);
+
+            return {
+              ...edge,
+              type:
+                movementEdge
+                  ? (
+                      edge.type ??
+                      "movement"
+                    )
+                  : "tree",
+              /*
+               * The TreeEdge component owns
+               * structural line appearance.
+               * Do not allow a promoted,
+               * collapsed, selected, or
+               * manually created edge to
+               * carry a different width.
+               */
+              style:
+                movementEdge
+                  ? edge.style
+                  : undefined,
+              hidden:
+                Boolean(edge.hidden) ||
+                (
+                  !showHeadWordLines &&
+                  isHeadToLexicalEdge(
+                    edge,
+                    displayedNodes,
+                  )
+                ),
+            };
+          }),
       [
         collapsedDisplayStructure,
         displayedNodes,
@@ -7383,6 +8200,26 @@ function exportTreeAsLatex() {
         Drag a head label to create the
         head and a blank lexical terminal
         beneath it.
+      </li>
+
+      <li>
+        To create a split head, select an
+        existing head and click Add lexical
+        box at the upper-left of the canvas.
+      </li>
+
+      <li>
+        Each click adds another blank
+        lexical daughter on the right side
+        of that head. Multiple selected
+        heads receive one new lexical box
+        each.
+      </li>
+
+      <li>
+        The new lexical boxes participate
+        in Tab navigation, balancing, PNG
+        export, and LaTeX export.
       </li>
 
       <li>
@@ -7665,13 +8502,41 @@ function exportTreeAsLatex() {
 
     <ul>
       <li>
+        Use Select box at the upper-left
+        of the canvas, then drag across
+        empty canvas space to select
+        several nodes at once.
+      </li>
+
+      <li>
+        While Select box is active, canvas
+        panning and node dragging are
+        temporarily disabled. Turn it off
+        to move nodes again.
+      </li>
+
+      <li>
         Click a node or branch line to
-        select it.
+        select an individual item.
       </li>
 
       <li>
         Press Delete or Backspace, or use
         Delete selected in the toolbar.
+      </li>
+
+      <li>
+        When selected nodes are removed,
+        each surviving daughter below the
+        deleted region is promoted to the
+        nearest surviving parent above the
+        highest deleted node.
+      </li>
+
+      <li>
+        Daughter order is preserved when
+        several promoted subtrees replace
+        one deleted node.
       </li>
 
       <li>
@@ -7843,27 +8708,32 @@ function exportTreeAsLatex() {
     <ul>
       <li>
         Check Remove unused bar levels to
-        hide any X′ node that has exactly
-        one structural daughter.
+        hide an X′ node when it has only
+        one daughter.
       </li>
 
       <li>
-        The X′ node must also have a
-        parent. Root bar levels are not
-        removed.
+        An X′ node is also hidden when it
+        is the only daughter of its parent,
+        even when the X′ itself has two or
+        more daughters.
       </li>
 
       <li>
-        The single daughter is promoted
-        directly to the removed bar
-        level’s parent.
+        The X′ node must have a parent.
+        Root bar levels are not removed.
       </li>
 
       <li>
-        Bar levels with two or more
-        daughters remain visible because
-        they represent an active
-        complement or adjunct structure.
+        Every daughter of the removed X′
+        is promoted directly to its parent,
+        with left-to-right order preserved.
+      </li>
+
+      <li>
+        A branching X′ remains visible only
+        when it also has a sister under its
+        parent.
       </li>
 
       <li>
@@ -7877,6 +8747,14 @@ function exportTreeAsLatex() {
         Automatic balancing, PNG export,
         and LaTeX export use the selected
         setting.
+      </li>
+
+      <li>
+        Structural branch lines keep the
+        same fixed thickness when bar
+        levels are hidden, nodes are
+        deleted, or daughters are
+        promoted.
       </li>
 
       <li>
@@ -8022,7 +8900,7 @@ function exportTreeAsLatex() {
             </label>
 
             <label
-              title="Hide X-prime levels that have exactly one daughter and promote that daughter to the X-prime level's parent"
+              title="Hide X-prime levels that have one daughter, or that are the only daughter of their parent, and promote their daughters upward"
               style={{
                 display:
                   "inline-flex",
@@ -8094,6 +8972,10 @@ function exportTreeAsLatex() {
   className="flow-canvas"
   style={{
     position: "relative",
+    cursor:
+      selectionBoxActive
+        ? "crosshair"
+        : undefined,
   }}
   onDragOver={
     handleCanvasDragOver
@@ -8123,6 +9005,70 @@ function exportTreeAsLatex() {
         "0 2px 8px rgba(0,0,0,0.09)",
     }}
   >
+    <button
+      type="button"
+      aria-pressed={
+        selectionBoxActive
+      }
+      onClick={() =>
+        setSelectionBoxActive(
+          (currentValue) =>
+            !currentValue,
+        )
+      }
+      title={
+        selectionBoxActive
+          ? "Selection box is active. Drag across the canvas to select multiple nodes."
+          : "Activate the selection box tool"
+      }
+      style={{
+        minHeight: 34,
+        padding: "0 9px",
+        border:
+          "1px solid #c7ccd4",
+        borderRadius: 6,
+        background:
+          selectionBoxActive
+            ? "#e6edf8"
+            : "#ffffff",
+        fontWeight: 600,
+        cursor: "pointer",
+      }}
+    >
+      Select box
+    </button>
+
+    <button
+      type="button"
+      onClick={
+        addBlankLexicalBoxes
+      }
+      disabled={
+        selectedHeadNodes.length ===
+        0
+      }
+      title={
+        selectedHeadNodes.length > 0
+          ? "Add one blank lexical daughter to each selected head"
+          : "Select a head node before adding a lexical box"
+      }
+      style={{
+        minHeight: 34,
+        padding: "0 9px",
+        border:
+          "1px solid #c7ccd4",
+        borderRadius: 6,
+        background: "#ffffff",
+        fontWeight: 600,
+        cursor:
+          selectedHeadNodes.length > 0
+            ? "pointer"
+            : "not-allowed",
+      }}
+    >
+      Add lexical box
+    </button>
+
     <button
       type="button"
       className="undo-button"
@@ -8440,12 +9386,19 @@ function exportTreeAsLatex() {
     onInit={
       setReactFlowInstance
     }
+    selectionOnDrag={
+      selectionBoxActive
+    }
+    panOnDrag={
+      !selectionBoxActive
+    }
+    nodesDraggable={
+      !selectionBoxActive
+    }
+    selectionKeyCode={null}
     deleteKeyCode={null}
     defaultEdgeOptions={{
-      type: "straight",
-      style: {
-        strokeWidth: 2,
-      },
+      type: "tree",
     }}
     fitView
   >
