@@ -42,7 +42,8 @@ type NodeKind =
   | "phrase"
   | "head"
   | "word"
-  | "wordInput";
+  | "wordInput"
+  | "movementSummary";
 
 interface SyntaxNodeData
   extends Record<string, unknown> {
@@ -177,8 +178,8 @@ function SyntaxNodeComponent({
   const reactFlow =
     useReactFlow<SyntaxNode, Edge>();
 
-    const saveUndoSnapshot =
-  useContext(UndoContext);
+  const saveUndoSnapshot =
+    useContext(UndoContext);
 
   const updateNodeInternals =
     useUpdateNodeInternals();
@@ -186,14 +187,26 @@ function SyntaxNodeComponent({
   const [isEditing, setIsEditing] =
     useState(false);
 
+  const isMovementSummary =
+    data.kind === "movementSummary";
+
+  const isLockedMovementNode =
+    Boolean(data.isLowerCopy) ||
+    isMovementSummary;
+
   const canHaveChildren =
     data.kind !== "word" &&
-    data.kind !== "wordInput";
+    data.kind !== "wordInput" &&
+    data.kind !== "movementSummary";
 
-  /*
-   * Recalculate the node's dimensions and handle
-   * positions whenever its text changes.
-   */
+  const summaryWidth =
+    Math.max(
+      120,
+      Array.from(data.label).length *
+        9 +
+        30,
+    );
+
   useEffect(() => {
     const animationFrame =
       requestAnimationFrame(() => {
@@ -201,7 +214,9 @@ function SyntaxNodeComponent({
       });
 
     return () => {
-      cancelAnimationFrame(animationFrame);
+      cancelAnimationFrame(
+        animationFrame,
+      );
     };
   }, [
     data.label,
@@ -213,11 +228,6 @@ function SyntaxNodeComponent({
   function finishEditing() {
     setIsEditing(false);
 
-    /*
-     * Wait for the input to disappear and the normal
-     * label to be rendered before measuring and
-     * balancing the tree.
-     */
     requestAnimationFrame(() => {
       updateNodeInternals(id);
 
@@ -235,7 +245,9 @@ function SyntaxNodeComponent({
             id,
           );
 
-        reactFlow.setNodes(balancedNodes);
+        reactFlow.setNodes(
+          balancedNodes,
+        );
       });
     });
   }
@@ -243,42 +255,103 @@ function SyntaxNodeComponent({
   return (
     <div
       className={[
-  "syntax-node",
-  `${data.kind}-node`,
-  selected
-    ? "selected-syntax-node"
-    : "",
-  isEditing
-    ? "editing-syntax-node"
-    : "",
-  data.isLowerCopy
-    ? "lower-copy-node"
-    : "",
-]
-  .filter(Boolean)
-  .join(" ")}
-      title="Double-click to edit"
+        "syntax-node",
+        `${data.kind}-node`,
+        selected
+          ? "selected-syntax-node"
+          : "",
+        isEditing
+          ? "editing-syntax-node"
+          : "",
+        data.isLowerCopy &&
+        !isMovementSummary
+          ? "condensed-lower-copy-node"
+          : "",
+        isMovementSummary
+          ? "movement-summary-node"
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      style={
+        isMovementSummary
+          ? {
+              width: summaryWidth,
+              minWidth: summaryWidth,
+              padding: 0,
+              border: 0,
+              background:
+                "transparent",
+              boxShadow: "none",
+              overflow: "visible",
+            }
+          : undefined
+      }
+      title={
+        isMovementSummary
+          ? "Condensed lexical content of the lower copy"
+          : data.isLowerCopy
+            ? "Condensed lower copy left by movement"
+            : "Double-click to edit"
+      }
       onDoubleClick={(event) => {
-  event.stopPropagation();
+        event.stopPropagation();
 
-  if (data.isLowerCopy) {
-    return;
-  }
+        if (isLockedMovementNode) {
+          return;
+        }
 
-  if (!isEditing) {
-    saveUndoSnapshot?.();
-  }
+        if (!isEditing) {
+          saveUndoSnapshot?.();
+        }
 
-  setIsEditing(true);
-}}
+        setIsEditing(true);
+      }}
     >
       <Handle
         type="target"
         position={Position.Top}
         className="syntax-handle"
+        style={
+          isMovementSummary
+            ? {
+                opacity: 0,
+                pointerEvents:
+                  "none",
+              }
+            : undefined
+        }
       />
 
-      {isEditing ? (
+      {isMovementSummary ? (
+        <div
+          aria-label={`Condensed phrase: ${data.label}`}
+          className="movement-summary-content"
+        >
+          <svg
+            aria-hidden="true"
+            width="88"
+            height="64"
+            viewBox="0 0 88 64"
+            preserveAspectRatio="none"
+            className="movement-summary-triangle"
+          >
+            <path
+              d="M 44 4 L 8 36 L 80 36 Z"
+              fill="rgba(255,255,255,0.92)"
+              stroke="currentColor"
+              strokeWidth="2"
+              vectorEffect="non-scaling-stroke"
+            />
+          </svg>
+
+          <span className="movement-summary-word-box">
+            <span className="movement-summary-words">
+              {data.label || "\u00A0"}
+            </span>
+          </span>
+        </div>
+      ) : isEditing ? (
         <span
           className="node-edit-wrapper nodrag nowheel"
           onDoubleClick={(event) =>
@@ -300,9 +373,13 @@ function SyntaxNodeComponent({
             autoFocus
             spellCheck={false}
             onChange={(event) => {
-              reactFlow.updateNodeData(id, {
-                label: event.target.value,
-              });
+              reactFlow.updateNodeData(
+                id,
+                {
+                  label:
+                    event.target.value,
+                },
+              );
             }}
             onBlur={finishEditing}
             onKeyDown={(event) => {
@@ -332,10 +409,6 @@ function SyntaxNodeComponent({
         />
       )}
 
-      {/*
-       * These invisible handles give movement
-       * arrows a precise bottom-centre anchor.
-       */}
       <Handle
         id="movement-source"
         type="source"
@@ -351,6 +424,10 @@ function SyntaxNodeComponent({
           background: "transparent",
           opacity: 0,
           pointerEvents: "none",
+          bottom:
+            isMovementSummary
+              ? 22
+              : undefined,
         }}
       />
 
@@ -716,6 +793,155 @@ function getLexicalHeadTerminalId(
   );
 }
 
+function getLexicalYield(
+  rootNodeId: string,
+  currentNodes: readonly SyntaxNode[],
+  currentEdges: readonly Edge[],
+): string {
+  const nodeById =
+    new Map(
+      currentNodes.map(
+        (node) => [
+          node.id,
+          node,
+        ],
+      ),
+    );
+
+  const childEdgesByParent =
+    new Map<string, Edge[]>();
+
+  for (const edge of currentEdges) {
+    if (isMovementEdge(edge)) {
+      continue;
+    }
+
+    const childEdges =
+      childEdgesByParent.get(
+        edge.source,
+      ) ?? [];
+
+    childEdgesByParent.set(
+      edge.source,
+      [
+        ...childEdges,
+        edge,
+      ],
+    );
+  }
+
+  for (
+    const childEdges
+    of childEdgesByParent.values()
+  ) {
+    childEdges.sort(
+      (firstEdge, secondEdge) => {
+        const orderDifference =
+          getSiblingOrder(
+            firstEdge,
+          ) -
+          getSiblingOrder(
+            secondEdge,
+          );
+
+        if (orderDifference !== 0) {
+          return orderDifference;
+        }
+
+        const firstChild =
+          nodeById.get(
+            firstEdge.target,
+          );
+
+        const secondChild =
+          nodeById.get(
+            secondEdge.target,
+          );
+
+        return (
+          (
+            firstChild?.position.x ??
+            0
+          ) -
+          (
+            secondChild?.position.x ??
+            0
+          )
+        );
+      },
+    );
+  }
+
+  const lexicalWords: string[] = [];
+  const activeNodeIds =
+    new Set<string>();
+
+  function collectWords(
+    nodeId: string,
+  ) {
+    if (
+      activeNodeIds.has(nodeId)
+    ) {
+      return;
+    }
+
+    activeNodeIds.add(nodeId);
+
+    const node =
+      nodeById.get(nodeId);
+
+    if (!node) {
+      activeNodeIds.delete(nodeId);
+      return;
+    }
+
+    if (
+      node.data.kind === "word" ||
+      node.data.kind === "wordInput"
+    ) {
+      const word =
+        node.data.label.trim();
+
+      if (word) {
+        lexicalWords.push(word);
+      }
+
+      activeNodeIds.delete(nodeId);
+      return;
+    }
+
+    if (
+      node.data.kind ===
+      "movementSummary"
+    ) {
+      const words =
+        node.data.label.trim();
+
+      if (words) {
+        lexicalWords.push(words);
+      }
+
+      activeNodeIds.delete(nodeId);
+      return;
+    }
+
+    const childEdges =
+      childEdgesByParent.get(
+        nodeId,
+      ) ?? [];
+
+    for (const edge of childEdges) {
+      collectWords(edge.target);
+    }
+
+    activeNodeIds.delete(nodeId);
+  }
+
+  collectWords(rootNodeId);
+
+  return lexicalWords.join(" ");
+}
+
 function wouldCreateCycle(
   parentId: string,
   childId: string,
@@ -774,6 +1000,16 @@ function getSyntaxNodeWidth(
   const characterCount = Array.from(
     node.data.label,
   ).length;
+
+  if (
+    node.data.kind ===
+    "movementSummary"
+  ) {
+    return Math.max(
+      120,
+      characterCount * 9 + 30,
+    );
+  }
 
   const approximateCharacterWidth =
     node.data.kind === "word" ||
@@ -1556,6 +1792,19 @@ function createLatexDocument(
 
     activeNodeIds.add(nodeId);
     visitedNodeIds.add(nodeId);
+
+    if (
+      node.data.kind ===
+      "movementSummary"
+    ) {
+      activeNodeIds.delete(
+        nodeId,
+      );
+
+      return `\\qroof{${escapeLatexText(
+        node.data.label,
+      )}}`;
+    }
 
     const formattedLabel =
       formatQtreeLabel(
@@ -2458,7 +2707,8 @@ function moveAttachedSubtree(
     edges.find(
       (edge) =>
         !isMovementEdge(edge) &&
-        edge.target === draggedNode.id,
+        edge.target ===
+          draggedNode.id,
     );
 
   if (!previousParentEdge) {
@@ -2494,6 +2744,13 @@ function moveAttachedSubtree(
     return;
   }
 
+  const lexicalYield =
+    getLexicalYield(
+      draggedNode.id,
+      originalNodes,
+      edges,
+    ) || "\u2205";
+
   const cloneOffsetX =
     draggedNode.position.x -
     originalRootNode.position.x;
@@ -2502,6 +2759,10 @@ function moveAttachedSubtree(
     draggedNode.position.y -
     originalRootNode.position.y;
 
+  /*
+   * Clone the complete articulated
+   * structure for the higher copy.
+   */
   const clonedIdByOriginalId =
     new Map<string, string>();
 
@@ -2646,8 +2907,12 @@ function moveAttachedSubtree(
   if (existingOrders.length > 0) {
     siblingOrder =
       placeOnLeft
-        ? Math.min(...existingOrders) - 1
-        : Math.max(...existingOrders) + 1;
+        ? Math.min(
+            ...existingOrders,
+          ) - 1
+        : Math.max(
+            ...existingOrders,
+          ) + 1;
   }
 
   const higherCopyEdge:
@@ -2665,34 +2930,211 @@ function moveAttachedSubtree(
   };
 
   /*
-   * Attach the movement arrow to the
-   * lexical terminal at the bottom of
-   * the lower and higher copies.
-   *
-   * For NP → N′ → N → WORD, the arrow
-   * runs from the bottom of the lower
-   * WORD to the bottom of the moved WORD.
+   * The lower copy retains only the
+   * moved phrase label. Its former
+   * articulated descendants are replaced
+   * by a triangle containing the complete
+   * lexical yield.
    */
+  const removedLowerDescendantIds =
+    new Set(
+      [...subtreeNodeIds].filter(
+        (nodeId) =>
+          nodeId !== draggedNode.id,
+      ),
+    );
+
+  const summaryNodeId =
+    `syntax-node-${nextNodeNumber.current}`;
+
+  nextNodeNumber.current += 1;
+
+  const condensedLowerNodes =
+    nodes
+      .filter(
+        (node) =>
+          !removedLowerDescendantIds.has(
+            node.id,
+          ),
+      )
+      .map((node) => {
+        if (
+          node.id !== draggedNode.id
+        ) {
+          return node;
+        }
+
+        return {
+          ...node,
+          position: {
+            ...originalRootNode.position,
+          },
+          data: {
+            ...originalRootNode.data,
+            isLowerCopy: true,
+          },
+          draggable: false,
+          selected: false,
+          dragging: false,
+        };
+      });
+
+  const rootWidth =
+    getSyntaxNodeWidth(
+      originalRootNode,
+    );
+
+  const summaryWidth =
+    Math.max(
+      120,
+      Array.from(lexicalYield).length *
+        9 +
+        30,
+    );
+
+  const summaryNode:
+    SyntaxNode = {
+    id: summaryNodeId,
+    type: "syntaxNode",
+    position: {
+      x:
+        originalRootNode.position.x +
+        (rootWidth - summaryWidth) / 2,
+      y:
+        originalRootNode.position.y +
+        52,
+    },
+    data: {
+      label: lexicalYield,
+      kind: "movementSummary",
+      isLowerCopy: true,
+    },
+    draggable: false,
+    selected: false,
+    dragging: false,
+  };
+
+  /*
+   * Remove the lower copy's old internal
+   * branches. Existing movement arrows
+   * aimed at a removed lexical terminal
+   * are redirected to the new triangle.
+   */
+  const condensedBaseEdges =
+    edges
+      .filter((edge) => {
+        if (isMovementEdge(edge)) {
+          return true;
+        }
+
+        if (
+          removedLowerDescendantIds.has(
+            edge.source,
+          ) ||
+          removedLowerDescendantIds.has(
+            edge.target,
+          )
+        ) {
+          return false;
+        }
+
+        if (
+          edge.source ===
+            draggedNode.id &&
+          subtreeNodeIds.has(
+            edge.target,
+          )
+        ) {
+          return false;
+        }
+
+        return true;
+      })
+      .map((edge): Edge => {
+        if (!isMovementEdge(edge)) {
+          return edge;
+        }
+
+        const sourceWasRemoved =
+          removedLowerDescendantIds.has(
+            edge.source,
+          );
+
+        const targetWasRemoved =
+          removedLowerDescendantIds.has(
+            edge.target,
+          );
+
+        if (
+          !sourceWasRemoved &&
+          !targetWasRemoved
+        ) {
+          return edge;
+        }
+
+        return {
+          ...edge,
+          source: sourceWasRemoved
+            ? summaryNodeId
+            : edge.source,
+          target: targetWasRemoved
+            ? summaryNodeId
+            : edge.target,
+          sourceHandle:
+            sourceWasRemoved
+              ? "movement-source"
+              : edge.sourceHandle,
+          targetHandle:
+            targetWasRemoved
+              ? "movement-target"
+              : edge.targetHandle,
+        };
+      });
+
+  /*
+   * Keep the condensed triangle structurally
+   * attached to the lower phrase so automatic
+   * layout places it directly underneath.
+   *
+   * The edge is hidden, so no extra vertical
+   * branch is drawn before the triangle.
+   */
+  const summaryEdge:
+    Edge = {
+    id:
+      `edge-${draggedNode.id}-${summaryNodeId}`,
+    source: draggedNode.id,
+    target: summaryNodeId,
+    type: "straight",
+    hidden: true,
+    data: {
+      edgeKind: "tree",
+      siblingOrder: 0,
+    },
+  };
+
   const lowerLexicalTerminalId =
     getLexicalHeadTerminalId(
       draggedNode.id,
       originalNodes,
       edges,
-    ) ?? draggedNode.id;
+    );
 
   const higherLexicalTerminalId =
-    clonedIdByOriginalId.get(
-      lowerLexicalTerminalId,
-    ) ?? clonedRootId;
+    lowerLexicalTerminalId
+      ? clonedIdByOriginalId.get(
+          lowerLexicalTerminalId,
+        )
+      : undefined;
 
   const movementArrow:
     Edge = {
     id:
-      `movement-${lowerLexicalTerminalId}-${higherLexicalTerminalId}`,
-    source:
-      lowerLexicalTerminalId,
+      `movement-${summaryNodeId}-${higherLexicalTerminalId ?? clonedRootId}`,
+    source: summaryNodeId,
     target:
-      higherLexicalTerminalId,
+      higherLexicalTerminalId ??
+      clonedRootId,
     sourceHandle:
       "movement-source",
     targetHandle:
@@ -2717,45 +3159,15 @@ function moveAttachedSubtree(
     selectable: false,
   };
 
-  const lowerCopyNodes =
-    nodes.map((node) => {
-      if (
-        !subtreeNodeIds.has(
-          node.id,
-        )
-      ) {
-        return node;
-      }
-
-      const originalNode =
-        originalNodeById.get(
-          node.id,
-        );
-
-      return {
-        ...node,
-        position: originalNode
-          ? {
-              ...originalNode.position,
-            }
-          : node.position,
-        data: {
-          ...node.data,
-          isLowerCopy: true,
-        },
-        draggable: false,
-        selected: false,
-        dragging: false,
-      };
-    });
-
   const updatedNodes = [
-    ...lowerCopyNodes,
+    ...condensedLowerNodes,
+    summaryNode,
     ...clonedNodes,
   ];
 
   const updatedEdges = [
-    ...edges,
+    ...condensedBaseEdges,
+    summaryEdge,
     ...clonedTreeEdges,
     higherCopyEdge,
     movementArrow,
@@ -3748,34 +4160,72 @@ function exportTreeAsLatex() {
   </details>
 
   <details>
-    <summary>
-      Move and reattach existing nodes
-    </summary>
+  <summary>
+    Movement and reattachment
+  </summary>
 
-    <ul>
-      <li>
-        Drag an existing node or subtree
-        onto another node to attach it as
-        a daughter.
-      </li>
+  <ul>
+    <li>
+      Drag an attached phrase onto a
+      different node higher in the tree
+      to create syntactic movement.
+    </li>
 
-      <li>
-        Dropping on the left or right
-        side determines its position
-        among the other daughters.
-      </li>
+    <li>
+      The moved phrase is copied into the
+      higher position with its complete
+      internal structure preserved.
+    </li>
 
-      <li>
-        A node can have only one parent.
-        Reattaching it removes its earlier
-        parent connection.
-      </li>
+    <li>
+      The original lower position remains
+      in the tree as a condensed copy.
+    </li>
 
-      <li>
-        Circular attachments are blocked.
-      </li>
-    </ul>
-  </details>
+    <li>
+      The condensed lower copy shows the
+      moved phrase label, a triangle, and
+      the complete sequence of words that
+      belonged to that phrase.
+    </li>
+
+    <li>
+      The words beneath the triangle are
+      struck through to identify them as
+      the unpronounced lower copy.
+    </li>
+
+    <li>
+      A curved dashed arrow runs beneath
+      the tree from the lower copy to the
+      lexical terminal of the higher copy.
+    </li>
+
+    <li>
+      The lower copy cannot be dragged or
+      edited after movement has occurred.
+    </li>
+
+    <li>
+      Dragging an unattached phrase onto
+      another node attaches it normally
+      without creating a lower copy or
+      movement arrow.
+    </li>
+
+    <li>
+      Dragging an attached node to a
+      position that is not higher in the
+      tree performs ordinary
+      reattachment rather than movement.
+    </li>
+
+    <li>
+      Use Undo or press Ctrl+Z to reverse
+      the most recent movement operation.
+    </li>
+  </ul>
+</details>
 
   <details>
     <summary>

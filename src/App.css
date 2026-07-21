@@ -568,3 +568,44 @@ button {
 .movement-edge-path {
   pointer-events: none;
 }
+
+.movement-summary-node {
+  overflow: visible;
+}
+
+.movement-summary-content {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  width: 100%;
+  padding-top: 0;
+  overflow: visible;
+}
+
+.movement-summary-triangle {
+  position: absolute;
+  left: 50%;
+  top: -50px;
+  transform: translateX(-50%);
+  display: block;
+  overflow: visible;
+  color: #20242a;
+  pointer-events: none;
+}
+
+.movement-summary-word-box {
+  width: max-content;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 10px;
+  transform: translateY(-22px);
+}
+
+.movement-summary-words {
+  display: inline-block;
+  white-space: nowrap;
+  text-decoration-line: line-through;
+  text-decoration-thickness: 2px;
+  text-decoration-color: #8b2f3f;
+  font-style: normal;
+}
