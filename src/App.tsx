@@ -1643,7 +1643,7 @@ function wouldCreateCycle(
 }
 
 const SISTER_GAP = 36;
-const LEVEL_GAP = 85;
+const LEVEL_GAP = 65;
 
 /*
  * Boxless mode uses substantially less
@@ -3987,6 +3987,7 @@ function attachDirectly(
       updatedEdges,
       parentNode.id,
       showNodeBoxes,
+      showHeadWordLines,
     );
 
   if (
@@ -4196,6 +4197,226 @@ function attachAsAdjunct(
   setPendingBarAttachment(null);
 }
 
+
+function attachHeadAsAdjunct(
+  attachment: PendingBarAttachment,
+) {
+  const lowerHeadNode =
+    nodes.find(
+      (node) =>
+        node.id ===
+        attachment.parentId,
+    );
+
+  const adjunctHeadNode =
+    nodes.find(
+      (node) =>
+        node.id ===
+        attachment.draggedId,
+    );
+
+  if (
+    !lowerHeadNode ||
+    !adjunctHeadNode ||
+    lowerHeadNode.data.kind !==
+      "head" ||
+    adjunctHeadNode.data.kind !==
+      "head"
+  ) {
+    setPendingBarAttachment(null);
+    return;
+  }
+
+  if (
+    wouldCreateCycle(
+      lowerHeadNode.id,
+      adjunctHeadNode.id,
+      edges,
+    )
+  ) {
+    setPendingBarAttachment(null);
+    return;
+  }
+
+  /*
+   * Head adjunction creates a new upper
+   * copy of the target head:
+   *
+   *       C
+   *      / \
+   *     T   C
+   *
+   * The original C and all of its lexical
+   * material remain intact underneath.
+   */
+  const incomingHeadEdge =
+    edges.find(
+      (edge) =>
+        !isMovementEdge(edge) &&
+        edge.target ===
+          lowerHeadNode.id,
+    );
+
+  const previousAdjunctParentEdge =
+    edges.find(
+      (edge) =>
+        !isMovementEdge(edge) &&
+        edge.target ===
+          adjunctHeadNode.id,
+    );
+
+  const newUpperHeadId =
+    `syntax-node-${nextNodeNumber.current}`;
+
+  nextNodeNumber.current += 1;
+
+  const newUpperHeadNode:
+    SyntaxNode = {
+    id: newUpperHeadId,
+    type: "syntaxNode",
+    position: {
+      ...lowerHeadNode.position,
+    },
+    data: {
+      ...lowerHeadNode.data,
+      kind: "head",
+      isLowerCopy: false,
+    },
+  };
+
+  let updatedEdges =
+    edges.filter((edge) => {
+      if (
+        !isMovementEdge(edge) &&
+        edge.target ===
+          adjunctHeadNode.id
+      ) {
+        return false;
+      }
+
+      if (
+        incomingHeadEdge &&
+        edge.id ===
+          incomingHeadEdge.id
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+
+  if (incomingHeadEdge) {
+    updatedEdges = addEdge(
+      {
+        id:
+          `edge-${incomingHeadEdge.source}-${newUpperHeadId}`,
+        source:
+          incomingHeadEdge.source,
+        target:
+          newUpperHeadId,
+        type: "straight",
+        data: {
+          edgeKind: "tree",
+          siblingOrder:
+            getSiblingOrder(
+              incomingHeadEdge,
+            ),
+        },
+      },
+      updatedEdges,
+    );
+  }
+
+  const leftDaughterId =
+    attachment.placeOnLeft
+      ? adjunctHeadNode.id
+      : lowerHeadNode.id;
+
+  const rightDaughterId =
+    attachment.placeOnLeft
+      ? lowerHeadNode.id
+      : adjunctHeadNode.id;
+
+  updatedEdges = addEdge(
+    {
+      id:
+        `edge-${newUpperHeadId}-${leftDaughterId}`,
+      source: newUpperHeadId,
+      target: leftDaughterId,
+      type: "straight",
+      data: {
+        edgeKind: "tree",
+        siblingOrder: 0,
+      },
+    },
+    updatedEdges,
+  );
+
+  updatedEdges = addEdge(
+    {
+      id:
+        `edge-${newUpperHeadId}-${rightDaughterId}`,
+      source: newUpperHeadId,
+      target: rightDaughterId,
+      type: "straight",
+      data: {
+        edgeKind: "tree",
+        siblingOrder: 1,
+      },
+    },
+    updatedEdges,
+  );
+
+  const nodeSnapshot:
+    SyntaxNode[] = [
+    ...nodes.map((node) => {
+      if (
+        node.id !==
+        adjunctHeadNode.id
+      ) {
+        return node;
+      }
+
+      return {
+        ...node,
+        position: {
+          ...attachment
+            .draggedPosition,
+        },
+      };
+    }),
+    newUpperHeadNode,
+  ];
+
+  let balancedNodes =
+    layoutTreeComponent(
+      nodeSnapshot,
+      updatedEdges,
+      newUpperHeadId,
+      showNodeBoxes,
+      showHeadWordLines,
+    );
+
+  if (
+    previousAdjunctParentEdge &&
+    previousAdjunctParentEdge.source !==
+      lowerHeadNode.id
+  ) {
+    balancedNodes =
+      layoutTreeComponent(
+        balancedNodes,
+        updatedEdges,
+        previousAdjunctParentEdge.source,
+        showNodeBoxes,
+        showHeadWordLines,
+      );
+  }
+
+  setEdges(updatedEdges);
+  setNodes(balancedNodes);
+  setPendingBarAttachment(null);
+}
+
 function moveAttachedSubtree(
   targetParentNode: SyntaxNode,
   draggedNode: SyntaxNode,
@@ -4389,45 +4610,150 @@ function moveAttachedSubtree(
     return;
   }
 
-  const existingSisterEdges =
-    edges.filter(
-      (edge) =>
-        !isMovementEdge(edge) &&
-        edge.source ===
-          targetParentNode.id,
-    );
+  const isHeadAdjunctionLanding =
+    targetParentNode.data.kind ===
+      "head" &&
+    draggedNode.data.kind ===
+      "head";
 
-  const existingOrders =
-    existingSisterEdges.map(
-      getSiblingOrder,
-    );
+  const incomingTargetHeadEdge =
+    isHeadAdjunctionLanding
+      ? edges.find(
+          (edge) =>
+            !isMovementEdge(edge) &&
+            edge.target ===
+              targetParentNode.id,
+        )
+      : undefined;
 
-  let siblingOrder = 0;
+  let higherLandingNode:
+    SyntaxNode | null = null;
 
-  if (existingOrders.length > 0) {
-    siblingOrder =
+  const higherLandingEdges:
+    Edge[] = [];
+
+  let higherLayoutStartId =
+    targetParentNode.id;
+
+  if (isHeadAdjunctionLanding) {
+    const newUpperHeadId =
+      `syntax-node-${nextNodeNumber.current}`;
+
+    nextNodeNumber.current += 1;
+
+    higherLandingNode = {
+      id: newUpperHeadId,
+      type: "syntaxNode",
+      position: {
+        ...targetParentNode.position,
+      },
+      data: {
+        ...targetParentNode.data,
+        kind: "head",
+        isLowerCopy: false,
+      },
+    };
+
+    higherLayoutStartId =
+      newUpperHeadId;
+
+    if (incomingTargetHeadEdge) {
+      higherLandingEdges.push({
+        id:
+          `edge-${incomingTargetHeadEdge.source}-${newUpperHeadId}`,
+        source:
+          incomingTargetHeadEdge.source,
+        target:
+          newUpperHeadId,
+        type: "straight",
+        data: {
+          edgeKind: "tree",
+          siblingOrder:
+            getSiblingOrder(
+              incomingTargetHeadEdge,
+            ),
+        },
+      });
+    }
+
+    const leftDaughterId =
       placeOnLeft
-        ? Math.min(
-            ...existingOrders,
-          ) - 1
-        : Math.max(
-            ...existingOrders,
-          ) + 1;
-  }
+        ? clonedRootId
+        : targetParentNode.id;
 
-  const higherCopyEdge:
-    Edge = {
-    id:
-      `edge-${targetParentNode.id}-${clonedRootId}`,
-    source:
-      targetParentNode.id,
-    target: clonedRootId,
-    type: "straight",
-    data: {
-      edgeKind: "tree",
-      siblingOrder,
-    },
-  };
+    const rightDaughterId =
+      placeOnLeft
+        ? targetParentNode.id
+        : clonedRootId;
+
+    higherLandingEdges.push(
+      {
+        id:
+          `edge-${newUpperHeadId}-${leftDaughterId}`,
+        source:
+          newUpperHeadId,
+        target:
+          leftDaughterId,
+        type: "straight",
+        data: {
+          edgeKind: "tree",
+          siblingOrder: 0,
+        },
+      },
+      {
+        id:
+          `edge-${newUpperHeadId}-${rightDaughterId}`,
+        source:
+          newUpperHeadId,
+        target:
+          rightDaughterId,
+        type: "straight",
+        data: {
+          edgeKind: "tree",
+          siblingOrder: 1,
+        },
+      },
+    );
+  } else {
+    const existingSisterEdges =
+      edges.filter(
+        (edge) =>
+          !isMovementEdge(edge) &&
+          edge.source ===
+            targetParentNode.id,
+      );
+
+    const existingOrders =
+      existingSisterEdges.map(
+        getSiblingOrder,
+      );
+
+    let siblingOrder = 0;
+
+    if (existingOrders.length > 0) {
+      siblingOrder =
+        placeOnLeft
+          ? Math.min(
+              ...existingOrders,
+            ) - 1
+          : Math.max(
+              ...existingOrders,
+            ) + 1;
+    }
+
+    higherLandingEdges.push({
+      id:
+        `edge-${targetParentNode.id}-${clonedRootId}`,
+      source:
+        targetParentNode.id,
+      target: clonedRootId,
+      type: "straight",
+      data: {
+        edgeKind: "tree",
+        siblingOrder,
+      },
+    });
+  }
 
   /*
    * The lower copy retains only the
@@ -4591,6 +4917,15 @@ function moveAttachedSubtree(
         };
       });
 
+  const landingBaseEdges =
+    incomingTargetHeadEdge
+      ? condensedBaseEdges.filter(
+          (edge) =>
+            edge.id !==
+            incomingTargetHeadEdge.id,
+        )
+      : condensedBaseEdges;
+
   /*
    * Keep the condensed triangle structurally
    * attached to the lower phrase so automatic
@@ -4662,14 +4997,19 @@ function moveAttachedSubtree(
   const updatedNodes = [
     ...condensedLowerNodes,
     summaryNode,
+    ...(
+      higherLandingNode
+        ? [higherLandingNode]
+        : []
+    ),
     ...clonedNodes,
   ];
 
   const updatedEdges = [
-    ...condensedBaseEdges,
+    ...landingBaseEdges,
     summaryEdge,
     ...clonedTreeEdges,
-    higherCopyEdge,
+    ...higherLandingEdges,
     movementArrow,
   ];
 
@@ -4677,7 +5017,7 @@ function moveAttachedSubtree(
     layoutTreeComponent(
       updatedNodes,
       updatedEdges,
-      targetParentNode.id,
+      higherLayoutStartId,
       showNodeBoxes,
       showHeadWordLines,
     );
@@ -4889,6 +5229,19 @@ const handleNodeDragStop:
     }
 
     if (
+      parentNode.data.kind ===
+        "head" &&
+      draggedNode.data.kind ===
+        "head"
+    ) {
+      attachHeadAsAdjunct(
+        attachment,
+      );
+
+      return;
+    }
+
+    if (
       isBarLevelLabel(
         parentNode.data.label,
       )
@@ -4923,6 +5276,178 @@ const handleNodeDragStop:
     event.dataTransfer.dropEffect =
       "copy";
   }
+
+
+function attachCreatedHeadAsAdjunct(
+  lowerHeadNode: SyntaxNode,
+  draggedHeadId: string,
+  createdNodes: SyntaxNode[],
+  createdEdges: Edge[],
+  placeOnLeft: boolean,
+  draggedPosition: {
+    x: number;
+    y: number;
+  },
+) {
+  const draggedHeadNode =
+    createdNodes.find(
+      (node) =>
+        node.id ===
+        draggedHeadId,
+    );
+
+  if (
+    lowerHeadNode.data.kind !==
+      "head" ||
+    draggedHeadNode?.data.kind !==
+      "head"
+  ) {
+    attachCreatedSubtreeDirectly(
+      lowerHeadNode,
+      draggedHeadId,
+      createdNodes,
+      createdEdges,
+      placeOnLeft,
+      draggedPosition,
+    );
+
+    return;
+  }
+
+  const newUpperHeadId =
+    `syntax-node-${nextNodeNumber.current}`;
+
+  nextNodeNumber.current += 1;
+
+  const newUpperHeadNode:
+    SyntaxNode = {
+    id: newUpperHeadId,
+    type: "syntaxNode",
+    position: {
+      ...lowerHeadNode.position,
+    },
+    data: {
+      ...lowerHeadNode.data,
+      kind: "head",
+      isLowerCopy: false,
+    },
+  };
+
+  const nodeSnapshot = [
+    ...nodes,
+    ...createdNodes,
+    newUpperHeadNode,
+  ].map((node) => {
+    if (
+      node.id !== draggedHeadId
+    ) {
+      return node;
+    }
+
+    return {
+      ...node,
+      position: {
+        ...draggedPosition,
+      },
+    };
+  });
+
+  const incomingHeadEdge =
+    edges.find(
+      (edge) =>
+        !isMovementEdge(edge) &&
+        edge.target ===
+          lowerHeadNode.id,
+    );
+
+  let updatedEdges = [
+    ...edges,
+    ...createdEdges,
+  ].filter(
+    (edge) =>
+      !incomingHeadEdge ||
+      edge.id !==
+        incomingHeadEdge.id,
+  );
+
+  if (incomingHeadEdge) {
+    updatedEdges = addEdge(
+      {
+        id:
+          `edge-${incomingHeadEdge.source}-${newUpperHeadId}`,
+        source:
+          incomingHeadEdge.source,
+        target:
+          newUpperHeadId,
+        type: "straight",
+        data: {
+          edgeKind: "tree",
+          siblingOrder:
+            getSiblingOrder(
+              incomingHeadEdge,
+            ),
+        },
+      },
+      updatedEdges,
+    );
+  }
+
+  const leftDaughterId =
+    placeOnLeft
+      ? draggedHeadId
+      : lowerHeadNode.id;
+
+  const rightDaughterId =
+    placeOnLeft
+      ? lowerHeadNode.id
+      : draggedHeadId;
+
+  updatedEdges = addEdge(
+    {
+      id:
+        `edge-${newUpperHeadId}-${leftDaughterId}`,
+      source:
+        newUpperHeadId,
+      target:
+        leftDaughterId,
+      type: "straight",
+      data: {
+        edgeKind: "tree",
+        siblingOrder: 0,
+      },
+    },
+    updatedEdges,
+  );
+
+  updatedEdges = addEdge(
+    {
+      id:
+        `edge-${newUpperHeadId}-${rightDaughterId}`,
+      source:
+        newUpperHeadId,
+      target:
+        rightDaughterId,
+      type: "straight",
+      data: {
+        edgeKind: "tree",
+        siblingOrder: 1,
+      },
+    },
+    updatedEdges,
+  );
+
+  const balancedNodes =
+    layoutTreeComponent(
+      nodeSnapshot,
+      updatedEdges,
+      newUpperHeadId,
+      showNodeBoxes,
+      showHeadWordLines,
+    );
+
+  setNodes(balancedNodes);
+  setEdges(updatedEdges);
+}
 
   function attachCreatedSubtreeDirectly(
   parentNode: SyntaxNode,
@@ -5320,6 +5845,32 @@ const handleNodeDragStop:
     const draggedPosition =
       draggedRootNode?.position ??
       dropPosition;
+
+    /*
+     * A head attached to another head is
+     * automatically treated as head
+     * adjunction. For example, dropping T
+     * on the left side of C produces:
+     *
+     * [C [T C]]
+     */
+    if (
+      targetNode.data.kind ===
+        "head" &&
+      draggedRootNode?.data.kind ===
+        "head"
+    ) {
+      attachCreatedHeadAsAdjunct(
+        targetNode,
+        draggedRootId,
+        createdNodes,
+        createdEdges,
+        placeOnLeft,
+        draggedPosition,
+      );
+
+      return;
+    }
 
     /*
      * X′ targets require the existing
@@ -5895,6 +6446,35 @@ function exportTreeAsLatex() {
         The side on which the adjunct is
         dropped determines whether it
         appears on the left or right.
+      </li>
+
+      <li>
+        Attaching one lexical head directly
+        to another lexical head is treated
+        automatically as head adjunction;
+        no dialog appears.
+      </li>
+
+      <li>
+        The target head is copied as a new
+        upper head, while the original
+        target head remains as the lower
+        daughter.
+      </li>
+
+      <li>
+        For example, attaching T on the
+        left side of C produces the
+        bracket structure [C [T C]].
+      </li>
+
+      <li>
+        When an already attached head moves
+        upward to another head, the higher
+        landing site uses the same
+        head-adjunction structure while the
+        lower copy and movement arrow are
+        preserved.
       </li>
     </ul>
   </details>

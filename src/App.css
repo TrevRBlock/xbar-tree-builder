@@ -202,7 +202,7 @@ button {
   display: flex;
   width: max-content;
   min-width: 44px;
-  min-height: 38px;
+  min-height: 15px;
   align-items: center;
   justify-content: center;
   padding: 7px 10px;
