@@ -23,7 +23,6 @@ import {
   useReactFlow,
   useUpdateNodeInternals,
   getNodesBounds,
-  getViewportForBounds,
   type Connection,
 type Edge,
 type Node,
@@ -2788,10 +2787,6 @@ if (dragStartSnapshot) {
     return;
   }
 
-  /*
-   * Close any node editor before taking
-   * the image.
-   */
   if (
     document.activeElement
       instanceof HTMLElement
@@ -2799,21 +2794,39 @@ if (dragStartSnapshot) {
     document.activeElement.blur();
   }
 
-  const imageWidth = 1600;
-  const imageHeight = 1200;
+  /*
+   * Small amount of space around the tree
+   * so node borders and branch lines are
+   * not clipped.
+   */
+  const imagePadding = 10;
 
   const nodesBounds =
     getNodesBounds(nodes);
 
-  const exportViewport =
-    getViewportForBounds(
-      nodesBounds,
-      imageWidth,
-      imageHeight,
-      0.1,
-      2,
-      0.12,
+  const imageWidth =
+    Math.ceil(
+      nodesBounds.width +
+      imagePadding * 2,
     );
+
+  const imageHeight =
+    Math.ceil(
+      nodesBounds.height +
+      imagePadding * 2,
+    );
+
+  /*
+   * Move the upper-left corner of the
+   * tree to the image padding boundary.
+   */
+  const translateX =
+    imagePadding -
+    nodesBounds.x;
+
+  const translateY =
+    imagePadding -
+    nodesBounds.y;
 
   flowCanvasRef.current?.classList.add(
     "exporting-tree",
@@ -2832,10 +2845,6 @@ if (dragStartSnapshot) {
           width: imageWidth,
           height: imageHeight,
 
-          /*
-           * Two pixels per output pixel
-           * gives a sharper result.
-           */
           pixelRatio: 2,
           cacheBust: true,
 
@@ -2846,8 +2855,11 @@ if (dragStartSnapshot) {
             height:
               `${imageHeight}px`,
 
+            transformOrigin:
+              "0 0",
+
             transform:
-              `translate(${exportViewport.x}px, ${exportViewport.y}px) scale(${exportViewport.zoom})`,
+              `translate(${translateX}px, ${translateY}px)`,
           },
         },
       );
