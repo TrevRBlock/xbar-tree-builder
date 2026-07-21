@@ -3,8 +3,10 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent,
 } from "react";
 
@@ -50,6 +52,42 @@ interface SyntaxNodeData
   label: string;
   kind: NodeKind;
   isLowerCopy?: boolean;
+  textBold?: boolean;
+  textItalic?: boolean;
+  textStrikethrough?: boolean;
+}
+
+type TextFormatKey =
+  | "textBold"
+  | "textItalic"
+  | "textStrikethrough";
+
+function isNodeTextBold(
+  data: SyntaxNodeData,
+): boolean {
+  /*
+   * Phrase and head labels retain their
+   * existing bold default. A stored value
+   * explicitly overrides that default.
+   */
+  return (
+    data.textBold ??
+    (
+      data.kind === "phrase" ||
+      data.kind === "head"
+    )
+  );
+}
+
+function getNodeTextFormatState(
+  data: SyntaxNodeData,
+  formatKey: TextFormatKey,
+): boolean {
+  if (formatKey === "textBold") {
+    return isNodeTextBold(data);
+  }
+
+  return Boolean(data[formatKey]);
 }
 
 type SyntaxNode = Node<
@@ -157,12 +195,14 @@ const UndoContext =
 interface DisplayOptionsContextValue {
   showNodeBoxes: boolean;
   showMovementArrows: boolean;
+  showHeadWordLines: boolean;
 }
 
 const DisplayOptionsContext =
   createContext<DisplayOptionsContextValue>({
     showNodeBoxes: true,
     showMovementArrows: true,
+    showHeadWordLines: true,
   });
 
 function createTreeSnapshot(
@@ -202,80 +242,286 @@ function createTreeSnapshot(
 function getAdjacentLexicalNodeId(
   currentNodeId: string,
   currentNodes: readonly SyntaxNode[],
+  currentEdges: readonly Edge[],
   direction: 1 | -1,
 ): string | null {
-  const lexicalNodes =
+  const nodeById =
+    new Map(
+      currentNodes.map(
+        (node) => [
+          node.id,
+          node,
+        ],
+      ),
+    );
+
+  const structuralEdges =
+    currentEdges.filter(
+      (edge) =>
+        !isMovementEdge(edge),
+    );
+
+  const childEdgesByParent =
+    new Map<string, Edge[]>();
+
+  const nodeIdsWithParents =
+    new Set<string>();
+
+  for (const edge of structuralEdges) {
+    if (
+      !nodeById.has(edge.source) ||
+      !nodeById.has(edge.target)
+    ) {
+      continue;
+    }
+
+    const childEdges =
+      childEdgesByParent.get(
+        edge.source,
+      ) ?? [];
+
+    childEdgesByParent.set(
+      edge.source,
+      [
+        ...childEdges,
+        edge,
+      ],
+    );
+
+    nodeIdsWithParents.add(
+      edge.target,
+    );
+  }
+
+  function getNodeCentreX(
+    node: SyntaxNode,
+  ): number {
+    return (
+      node.position.x +
+      (
+        node.measured?.width ??
+        getSyntaxNodeWidth(node)
+      ) /
+        2
+    );
+  }
+
+  function compareNodesLeftToRight(
+    firstNode: SyntaxNode,
+    secondNode: SyntaxNode,
+  ): number {
+    const horizontalDifference =
+      getNodeCentreX(firstNode) -
+      getNodeCentreX(secondNode);
+
+    if (
+      Math.abs(
+        horizontalDifference,
+      ) > 0.5
+    ) {
+      return horizontalDifference;
+    }
+
+    const verticalDifference =
+      firstNode.position.y -
+      secondNode.position.y;
+
+    if (
+      Math.abs(
+        verticalDifference,
+      ) > 0.5
+    ) {
+      return verticalDifference;
+    }
+
+    return firstNode.id.localeCompare(
+      secondNode.id,
+    );
+  }
+
+  const rootNodes =
+    currentNodes
+      .filter(
+        (node) =>
+          !nodeIdsWithParents.has(
+            node.id,
+          ),
+      )
+      .sort(
+        compareNodesLeftToRight,
+      );
+
+  const orderedLexicalNodeIds:
+    string[] = [];
+
+  const visitedNodeIds =
+    new Set<string>();
+
+  function visitNode(
+    nodeId: string,
+  ) {
+    if (
+      visitedNodeIds.has(nodeId)
+    ) {
+      return;
+    }
+
+    visitedNodeIds.add(nodeId);
+
+    const node =
+      nodeById.get(nodeId);
+
+    if (!node) {
+      return;
+    }
+
+    if (
+      (
+        node.data.kind === "word" ||
+        node.data.kind ===
+          "wordInput"
+      ) &&
+      !node.data.isLowerCopy
+    ) {
+      orderedLexicalNodeIds.push(
+        node.id,
+      );
+
+      return;
+    }
+
+    const orderedChildEdges =
+      [
+        ...(
+          childEdgesByParent.get(
+            nodeId,
+          ) ?? []
+        ),
+      ].sort(
+        (
+          firstEdge,
+          secondEdge,
+        ) => {
+          const orderDifference =
+            getSiblingOrder(
+              firstEdge,
+            ) -
+            getSiblingOrder(
+              secondEdge,
+            );
+
+          if (orderDifference !== 0) {
+            return orderDifference;
+          }
+
+          const firstChild =
+            nodeById.get(
+              firstEdge.target,
+            );
+
+          const secondChild =
+            nodeById.get(
+              secondEdge.target,
+            );
+
+          if (
+            firstChild &&
+            secondChild
+          ) {
+            return compareNodesLeftToRight(
+              firstChild,
+              secondChild,
+            );
+          }
+
+          return firstEdge.target
+            .localeCompare(
+              secondEdge.target,
+            );
+        },
+      );
+
+    for (
+      const childEdge
+      of orderedChildEdges
+    ) {
+      visitNode(
+        childEdge.target,
+      );
+    }
+  }
+
+  /*
+   * Traverse each structural tree in its
+   * true sister order. This includes
+   * lexical terminals under C, T, V, and
+   * every other head, even when several
+   * terminals have similar x coordinates.
+   */
+  for (const rootNode of rootNodes) {
+    visitNode(rootNode.id);
+  }
+
+  /*
+   * Malformed or temporarily detached
+   * lexical nodes should still remain
+   * reachable through Tab navigation.
+   */
+  const unvisitedLexicalNodes =
     currentNodes
       .filter(
         (node) =>
           (
-            node.data.kind === "word" ||
+            node.data.kind ===
+              "word" ||
             node.data.kind ===
               "wordInput"
           ) &&
-          !node.data.isLowerCopy,
+          !node.data.isLowerCopy &&
+          !orderedLexicalNodeIds.includes(
+            node.id,
+          ),
       )
       .sort(
-        (
-          firstNode,
-          secondNode,
-        ) => {
-          const firstCentreX =
-            firstNode.position.x +
-            getSyntaxNodeWidth(
-              firstNode,
-            ) /
-              2;
-
-          const secondCentreX =
-            secondNode.position.x +
-            getSyntaxNodeWidth(
-              secondNode,
-            ) /
-              2;
-
-          const horizontalDifference =
-            firstCentreX -
-            secondCentreX;
-
-          if (
-            Math.abs(
-              horizontalDifference,
-            ) > 1
-          ) {
-            return horizontalDifference;
-          }
-
-          return (
-            firstNode.position.y -
-            secondNode.position.y
-          );
-        },
+        compareNodesLeftToRight,
       );
 
-  if (lexicalNodes.length === 0) {
+  for (
+    const lexicalNode
+    of unvisitedLexicalNodes
+  ) {
+    orderedLexicalNodeIds.push(
+      lexicalNode.id,
+    );
+  }
+
+  if (
+    orderedLexicalNodeIds.length ===
+    0
+  ) {
     return null;
   }
 
   const currentIndex =
-    lexicalNodes.findIndex(
-      (node) =>
-        node.id === currentNodeId,
+    orderedLexicalNodeIds.indexOf(
+      currentNodeId,
     );
 
   if (currentIndex === -1) {
-    return lexicalNodes[0].id;
+    return orderedLexicalNodeIds[0];
   }
 
   const nextIndex =
     (
       currentIndex +
       direction +
-      lexicalNodes.length
+      orderedLexicalNodeIds.length
     ) %
-    lexicalNodes.length;
+    orderedLexicalNodeIds.length;
 
-  return lexicalNodes[nextIndex].id;
+  return orderedLexicalNodeIds[
+    nextIndex
+  ];
 }
 
 function SyntaxNodeComponent({
@@ -291,6 +537,7 @@ function SyntaxNodeComponent({
 
   const {
     showNodeBoxes,
+    showHeadWordLines,
   } = useContext(
     DisplayOptionsContext,
   );
@@ -313,10 +560,46 @@ function SyntaxNodeComponent({
     data.kind !== "wordInput" &&
     data.kind !== "movementSummary";
 
+  const labelLines =
+    data.label
+      .replace(/\r\n?/g, "\n")
+      .split("\n");
+
+  const longestLabelLineLength =
+    Math.max(
+      1,
+      ...labelLines.map(
+        (line) =>
+          Array.from(line).length,
+      ),
+    );
+
+  const nodeTextStyle: CSSProperties = {
+    fontWeight:
+      isNodeTextBold(data)
+        ? 700
+        : 400,
+    fontStyle:
+      data.textItalic
+        ? "italic"
+        : "normal",
+    textDecorationLine:
+      data.textStrikethrough
+        ? "line-through"
+        : "none",
+    textDecorationThickness:
+      data.textStrikethrough
+        ? "2px"
+        : undefined,
+    whiteSpace: "pre",
+    textAlign: "center",
+    lineHeight: 1.2,
+  };
+
   const summaryWidth =
     Math.max(
       120,
-      Array.from(data.label).length *
+      longestLabelLineLength *
         9 +
         30,
     );
@@ -383,6 +666,9 @@ function SyntaxNodeComponent({
     };
   }, [
     data.label,
+    data.textBold,
+    data.textItalic,
+    data.textStrikethrough,
     id,
     isEditing,
     showNodeBoxes,
@@ -408,6 +694,7 @@ function SyntaxNodeComponent({
             currentEdges,
             id,
             showNodeBoxes,
+            showHeadWordLines,
           );
 
         reactFlow.setNodes(
@@ -568,17 +855,46 @@ function SyntaxNodeComponent({
           <span
             className="node-edit-sizer"
             aria-hidden="true"
+            style={nodeTextStyle}
           >
             {data.label || "\u00A0"}
           </span>
 
-          <input
-            type="text"
+          <textarea
             className="editable-node-input nodrag nowheel"
             value={data.label}
             aria-label="Edit node label"
             autoFocus
             spellCheck={false}
+            rows={Math.max(
+              1,
+              labelLines.length,
+            )}
+            style={{
+              ...nodeTextStyle,
+              width:
+                `${Math.max(
+                  2,
+                  longestLabelLineLength +
+                    1,
+                )}ch`,
+              height:
+                `${Math.max(
+                  1,
+                  labelLines.length,
+                ) * 1.2 + 0.45}em`,
+              minWidth: "2ch",
+              minHeight: "1.65em",
+              padding: "1px 2px",
+              boxSizing:
+                "content-box",
+              resize: "none",
+              overflow: "hidden",
+              fontFamily: "inherit",
+              fontSize: "inherit",
+              background:
+                "transparent",
+            }}
             onFocus={(event) => {
               if (
                 (
@@ -620,6 +936,7 @@ function SyntaxNodeComponent({
                   getAdjacentLexicalNodeId(
                     id,
                     reactFlow.getNodes(),
+                    reactFlow.getEdges(),
                     event.shiftKey
                       ? -1
                       : 1,
@@ -651,7 +968,22 @@ function SyntaxNodeComponent({
               }
 
               if (
-                event.key === "Enter" ||
+                event.key === "Enter"
+              ) {
+                if (event.shiftKey) {
+                  /*
+                   * Shift+Enter inserts a
+                   * new line in the label.
+                   */
+                  return;
+                }
+
+                event.preventDefault();
+                event.currentTarget.blur();
+                return;
+              }
+
+              if (
                 event.key === "Escape"
               ) {
                 event.preventDefault();
@@ -661,7 +993,10 @@ function SyntaxNodeComponent({
           />
         </span>
       ) : (
-        <span className="syntax-node-label">
+        <span
+          className="syntax-node-label"
+          style={nodeTextStyle}
+        >
           {data.label || "\u00A0"}
         </span>
       )}
@@ -833,6 +1168,37 @@ function isMovementEdge(
   return (
     edge.data?.edgeKind ===
     "movement"
+  );
+}
+
+function isHeadToLexicalEdge(
+  edge: Edge,
+  currentNodes:
+    readonly SyntaxNode[],
+): boolean {
+  if (isMovementEdge(edge)) {
+    return false;
+  }
+
+  const sourceNode =
+    currentNodes.find(
+      (node) =>
+        node.id === edge.source,
+    );
+
+  const targetNode =
+    currentNodes.find(
+      (node) =>
+        node.id === edge.target,
+    );
+
+  return (
+    sourceNode?.data.kind === "head" &&
+    (
+      targetNode?.data.kind === "word" ||
+      targetNode?.data.kind ===
+        "wordInput"
+    )
   );
 }
 
@@ -1302,9 +1668,19 @@ function getSyntaxNodeWidth(
     return node.measured.width;
   }
 
-  const characterCount = Array.from(
-    node.data.label,
-  ).length;
+  const labelLines =
+    node.data.label
+      .replace(/\r\n?/g, "\n")
+      .split("\n");
+
+  const characterCount =
+    Math.max(
+      1,
+      ...labelLines.map(
+        (line) =>
+          Array.from(line).length,
+      ),
+    );
 
   if (
     node.data.kind ===
@@ -1435,6 +1811,7 @@ function layoutTreeComponent(
   currentEdges: readonly Edge[],
   startingNodeId: string,
   showNodeBoxes = true,
+  showHeadWordLines = true,
 ): SyntaxNode[] {
   const activeSisterGap =
     showNodeBoxes
@@ -1778,20 +2155,41 @@ childIds.forEach(
      * to the phrase label in both boxed and
      * boxless modes.
      */
+    const parentHeight =
+      node.measured?.height ??
+      (
+        showNodeBoxes
+          ? 40
+          : 20
+      );
+
+    const isHeadToLexicalChild =
+      node.data.kind === "head" &&
+      (
+        childNode?.data.kind ===
+          "word" ||
+        childNode?.data.kind ===
+          "wordInput"
+      );
+
     const childY =
       childNode?.data.kind ===
       "movementSummary"
         ? y +
-          (
-            node.measured?.height ??
+          parentHeight +
+          MOVEMENT_SUMMARY_APEX_OFFSET
+        : (
+            !showHeadWordLines &&
+            isHeadToLexicalChild
+          )
+          ? y +
+            parentHeight +
             (
               showNodeBoxes
-                ? 40
-                : 20
+                ? 8
+                : 3
             )
-          ) +
-          MOVEMENT_SUMMARY_APEX_OFFSET
-        : y + activeLevelGap;
+          : y + activeLevelGap;
 
     placeSubtree(
       childId,
@@ -1838,6 +2236,7 @@ function layoutAllTreeComponents(
   currentNodes: readonly SyntaxNode[],
   currentEdges: readonly Edge[],
   showNodeBoxes: boolean,
+  showHeadWordLines: boolean,
 ): SyntaxNode[] {
   if (currentNodes.length === 0) {
     return [];
@@ -1897,6 +2296,7 @@ function layoutAllTreeComponents(
         currentEdges,
         rootNode.id,
         showNodeBoxes,
+        showHeadWordLines,
       );
   }
 
@@ -2026,18 +2426,18 @@ function escapeLatexText(
     .join("");
 }
 
-function formatLatexNodeLabel(
-  label: string,
+function formatLatexLabelLine(
+  line: string,
 ): string {
-  const trimmedLabel =
-    label.trim();
+  const trimmedLine =
+    line.trim();
 
-  if (!trimmedLabel) {
-    return "\\phantom{x}";
+  if (!trimmedLine) {
+    return "\\strut";
   }
 
   const primeMatch =
-    trimmedLabel.match(
+    trimmedLine.match(
       /^(.*?)[′']$/u,
     );
 
@@ -2051,8 +2451,53 @@ function formatLatexNodeLabel(
   }
 
   return escapeLatexText(
-    trimmedLabel,
+    trimmedLine,
   );
+}
+
+function formatLatexNodeLabel(
+  label: string,
+  data: SyntaxNodeData,
+): string {
+  const lines =
+    label
+      .replace(/\r\n?/g, "\n")
+      .split("\n");
+
+  const formattedLines =
+    lines.map((line) => {
+      let formattedLine =
+        formatLatexLabelLine(
+          line,
+        );
+
+      if (isNodeTextBold(data)) {
+        formattedLine =
+          `\\textbf{${formattedLine}}`;
+      }
+
+      if (data.textItalic) {
+        formattedLine =
+          `\\textit{${formattedLine}}`;
+      }
+
+      if (
+        data.textStrikethrough
+      ) {
+        formattedLine =
+          `\\sout{${formattedLine}}`;
+      }
+
+      return formattedLine;
+    });
+
+  if (formattedLines.length === 1) {
+    return formattedLines[0];
+  }
+
+  return `\\shortstack{${formattedLines.join(
+    "\\\\",
+  )}}`;
 }
 
 function getLatexNodeName(
@@ -2086,6 +2531,7 @@ function createLatexDocument(
     readonly Edge[],
   showNodeBoxes: boolean,
   showMovementArrows: boolean,
+  showHeadWordLines: boolean,
 ): string {
   if (
     currentNodes.length === 0
@@ -2254,6 +2700,7 @@ function createLatexDocument(
     const label =
       formatLatexNodeLabel(
         node.data.label,
+        node.data,
       );
 
     let nodeStyle =
@@ -2446,6 +2893,20 @@ function createLatexDocument(
             return false;
           }
 
+          if (
+            !showHeadWordLines &&
+            sourceNode.data.kind ===
+              "head" &&
+            (
+              targetNode.data.kind ===
+                "word" ||
+              targetNode.data.kind ===
+                "wordInput"
+            )
+          ) {
+            return false;
+          }
+
           return (
             sourceNode.data.kind !==
               "movementSummary" &&
@@ -2560,7 +3021,7 @@ function createLatexDocument(
     "    line width=0.8pt,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
-    "    font=\\sffamily\\bfseries",
+    "    font=\\sffamily",
     "  },",
     "  syntax head/.style={",
     "    draw=xbarpurple,",
@@ -2569,7 +3030,7 @@ function createLatexDocument(
     "    line width=0.8pt,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
-    "    font=\\sffamily\\bfseries",
+    "    font=\\sffamily",
     "  },",
     "  syntax word/.style={",
     "    draw=xbaryellow,",
@@ -2585,14 +3046,14 @@ function createLatexDocument(
     "    fill=none,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
-    "    font=\\sffamily\\bfseries",
+    "    font=\\sffamily",
     "  },",
     "  syntax head plain/.style={",
     "    draw=none,",
     "    fill=none,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
-    "    font=\\sffamily\\bfseries",
+    "    font=\\sffamily",
     "  },",
     "  syntax word plain/.style={",
     "    draw=none,",
@@ -2734,6 +3195,9 @@ const SHOW_NODE_BOXES_STORAGE_KEY =
 const SHOW_MOVEMENT_ARROWS_STORAGE_KEY =
   "xbar-tree-builder-show-movement-arrows-v1";
 
+const SHOW_HEAD_WORD_LINES_STORAGE_KEY =
+  "xbar-tree-builder-show-head-word-lines-v1";
+
 function loadShowNodeBoxes(): boolean {
   if (
     typeof window === "undefined"
@@ -2769,6 +3233,29 @@ function loadShowMovementArrows(): boolean {
     const savedValue =
       window.localStorage.getItem(
         SHOW_MOVEMENT_ARROWS_STORAGE_KEY,
+      );
+
+    if (savedValue === null) {
+      return true;
+    }
+
+    return savedValue === "true";
+  } catch {
+    return true;
+  }
+}
+
+function loadShowHeadWordLines(): boolean {
+  if (
+    typeof window === "undefined"
+  ) {
+    return true;
+  }
+
+  try {
+    const savedValue =
+      window.localStorage.getItem(
+        SHOW_HEAD_WORD_LINES_STORAGE_KEY,
       );
 
     if (savedValue === null) {
@@ -3044,6 +3531,13 @@ const [
   loadShowMovementArrows,
 );
 
+const [
+  showHeadWordLines,
+  setShowHeadWordLines,
+] = useState<boolean>(
+  loadShowHeadWordLines,
+);
+
 useEffect(() => {
   try {
     window.localStorage.setItem(
@@ -3071,6 +3565,20 @@ useEffect(() => {
     );
   }
 }, [showMovementArrows]);
+
+useEffect(() => {
+  try {
+    window.localStorage.setItem(
+      SHOW_HEAD_WORD_LINES_STORAGE_KEY,
+      String(showHeadWordLines),
+    );
+  } catch (error) {
+    console.error(
+      "The head-to-word line setting could not be saved.",
+      error,
+    );
+  }
+}, [showHeadWordLines]);
 
 const autoBalanceFrameRef =
   useRef<number | null>(null);
@@ -3112,6 +3620,7 @@ const scheduleAutoBalance =
                 currentNodes,
                 currentEdges,
                 showNodeBoxes,
+                showHeadWordLines,
               );
 
             if (
@@ -3132,6 +3641,7 @@ const scheduleAutoBalance =
   }, [
     reactFlowInstance,
     setNodes,
+    showHeadWordLines,
     showNodeBoxes,
   ]);
 
@@ -3490,6 +4000,7 @@ function attachDirectly(
         updatedEdges,
         previousParentEdge.source,
         showNodeBoxes,
+        showHeadWordLines,
       );
   }
 
@@ -3662,6 +4173,7 @@ function attachAsAdjunct(
       updatedEdges,
       newBarId,
       showNodeBoxes,
+      showHeadWordLines,
     );
 
   if (
@@ -3675,6 +4187,7 @@ function attachAsAdjunct(
         updatedEdges,
         previousAdjunctParentEdge.source,
         showNodeBoxes,
+        showHeadWordLines,
       );
   }
 
@@ -4166,6 +4679,7 @@ function moveAttachedSubtree(
       updatedEdges,
       targetParentNode.id,
       showNodeBoxes,
+      showHeadWordLines,
     );
 
   setNodes(balancedNodes);
@@ -4482,6 +4996,7 @@ const handleNodeDragStop:
       updatedEdges,
       parentNode.id,
       showNodeBoxes,
+      showHeadWordLines,
     );
 
   setNodes(balancedNodes);
@@ -4775,6 +5290,7 @@ const handleNodeDragStop:
           updatedEdges,
           draggedRootId,
           showNodeBoxes,
+          showHeadWordLines,
         );
 
       setNodes(balancedNodes);
@@ -5050,6 +5566,7 @@ function exportTreeAsLatex() {
         edges,
         showNodeBoxes,
         showMovementArrows,
+        showHeadWordLines,
       );
 
     downloadTextFile(
@@ -5065,6 +5582,139 @@ function exportTreeAsLatex() {
     alert(message);
   }
 }
+
+  const selectedFormattableNodes =
+    useMemo(
+      () =>
+        nodes.filter(
+          (node) =>
+            node.selected &&
+            node.data.kind !==
+              "movementSummary",
+        ),
+      [nodes],
+    );
+
+  const selectedNodesAreBold =
+    selectedFormattableNodes.length >
+      0 &&
+    selectedFormattableNodes.every(
+      (node) =>
+        isNodeTextBold(
+          node.data,
+        ),
+    );
+
+  const selectedNodesAreItalic =
+    selectedFormattableNodes.length >
+      0 &&
+    selectedFormattableNodes.every(
+      (node) =>
+        Boolean(
+          node.data.textItalic,
+        ),
+    );
+
+  const selectedNodesAreStruck =
+    selectedFormattableNodes.length >
+      0 &&
+    selectedFormattableNodes.every(
+      (node) =>
+        Boolean(
+          node.data
+            .textStrikethrough,
+        ),
+    );
+
+  function toggleSelectedTextFormat(
+    formatKey: TextFormatKey,
+  ) {
+    if (
+      selectedFormattableNodes.length ===
+      0
+    ) {
+      return;
+    }
+
+    const selectedNodeIds =
+      new Set(
+        selectedFormattableNodes.map(
+          (node) => node.id,
+        ),
+      );
+
+    const shouldEnable =
+      !selectedFormattableNodes.every(
+        (node) =>
+          getNodeTextFormatState(
+            node.data,
+            formatKey,
+          ),
+      );
+
+    saveUndoSnapshot();
+
+    setNodes((currentNodes) =>
+      currentNodes.map((node) =>
+        selectedNodeIds.has(
+          node.id,
+        )
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                [formatKey]:
+                  shouldEnable,
+              },
+            }
+          : node,
+      ),
+    );
+
+    requestAnimationFrame(() => {
+      scheduleAutoBalance();
+    });
+  }
+
+  const formattingButtonBaseStyle:
+    CSSProperties = {
+    width: 34,
+    minWidth: 34,
+    height: 34,
+    padding: 0,
+    display: "inline-grid",
+    placeItems: "center",
+    border:
+      "1px solid #c7ccd4",
+    borderRadius: 6,
+    cursor:
+      selectedFormattableNodes
+        .length > 0
+        ? "pointer"
+        : "not-allowed",
+  };
+
+  const displayedEdges =
+    useMemo(
+      () =>
+        edges.map((edge) => ({
+          ...edge,
+          hidden:
+            Boolean(edge.hidden) ||
+            (
+              !showHeadWordLines &&
+              isHeadToLexicalEdge(
+                edge,
+                nodes,
+              )
+            ),
+        })),
+      [
+        edges,
+        nodes,
+        showHeadWordLines,
+      ],
+    );
 
   return (
     <div className="tree-builder">
@@ -5285,14 +5935,28 @@ function exportTreeAsLatex() {
       </li>
 
       <li>
-        The node expands automatically as
-        more text is entered.
+        Select one or more boxes and use
+        the B, I, and S toolbar buttons to
+        toggle bold, italics, and
+        strikethrough.
       </li>
 
       <li>
-        Press Enter or Escape, or click
-        outside the node, to finish
-        editing.
+        While editing, press Shift+Enter
+        to insert a new line inside the
+        same box.
+      </li>
+
+      <li>
+        The node expands automatically as
+        text or additional lines are
+        entered.
+      </li>
+
+      <li>
+        Press Enter without Shift, press
+        Escape, or click outside the node
+        to finish editing.
       </li>
 
       <li>
@@ -5437,6 +6101,44 @@ function exportTreeAsLatex() {
 
   <details>
     <summary>
+      Show or hide head-word lines
+    </summary>
+
+    <ul>
+      <li>
+        Keep Show head-word lines checked
+        to draw the vertical structural
+        line between a head such as N and
+        its lexical word.
+      </li>
+
+      <li>
+        Clear Show head-word lines to hide
+        that line and place the lexical
+        word directly beneath its head.
+      </li>
+
+      <li>
+        The hidden line remains part of
+        the tree structure, so movement,
+        balancing, undo, and editing still
+        work normally.
+      </li>
+
+      <li>
+        PNG and LaTeX exports use the
+        currently selected setting.
+      </li>
+
+      <li>
+        The setting is remembered when
+        the page is reopened.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
       Export the tree
     </summary>
 
@@ -5516,6 +6218,110 @@ function exportTreeAsLatex() {
           </div>
 
           <div className="toolbar-buttons">
+            <span
+              role="group"
+              aria-label="Text formatting"
+              title="Select one or more boxes, then apply text formatting"
+              style={{
+                display:
+                  "inline-flex",
+                alignItems:
+                  "center",
+                gap: 4,
+              }}
+            >
+              <button
+                type="button"
+                aria-label="Toggle bold"
+                aria-pressed={
+                  selectedNodesAreBold
+                }
+                disabled={
+                  selectedFormattableNodes
+                    .length === 0
+                }
+                onMouseDown={(event) =>
+                  event.preventDefault()
+                }
+                onClick={() =>
+                  toggleSelectedTextFormat(
+                    "textBold",
+                  )
+                }
+                style={{
+                  ...formattingButtonBaseStyle,
+                  background:
+                    selectedNodesAreBold
+                      ? "#e6edf8"
+                      : "#ffffff",
+                  fontWeight: 700,
+                }}
+              >
+                B
+              </button>
+
+              <button
+                type="button"
+                aria-label="Toggle italics"
+                aria-pressed={
+                  selectedNodesAreItalic
+                }
+                disabled={
+                  selectedFormattableNodes
+                    .length === 0
+                }
+                onMouseDown={(event) =>
+                  event.preventDefault()
+                }
+                onClick={() =>
+                  toggleSelectedTextFormat(
+                    "textItalic",
+                  )
+                }
+                style={{
+                  ...formattingButtonBaseStyle,
+                  background:
+                    selectedNodesAreItalic
+                      ? "#e6edf8"
+                      : "#ffffff",
+                  fontStyle: "italic",
+                }}
+              >
+                I
+              </button>
+
+              <button
+                type="button"
+                aria-label="Toggle strikethrough"
+                aria-pressed={
+                  selectedNodesAreStruck
+                }
+                disabled={
+                  selectedFormattableNodes
+                    .length === 0
+                }
+                onMouseDown={(event) =>
+                  event.preventDefault()
+                }
+                onClick={() =>
+                  toggleSelectedTextFormat(
+                    "textStrikethrough",
+                  )
+                }
+                style={{
+                  ...formattingButtonBaseStyle,
+                  background:
+                    selectedNodesAreStruck
+                      ? "#e6edf8"
+                      : "#ffffff",
+                  textDecoration:
+                    "line-through",
+                }}
+              >
+                S
+              </button>
+            </span>
+
             <label
               title="Show or hide boxes around all phrase, category, and word labels"
               style={{
@@ -5592,6 +6398,44 @@ function exportTreeAsLatex() {
               Show movement arrows
             </label>
 
+            <label
+              title="Show or hide the vertical line between a head and its lexical word"
+              style={{
+                display:
+                  "inline-flex",
+                alignItems:
+                  "center",
+                gap: 7,
+                padding:
+                  "7px 10px",
+                border:
+                  "1px solid #c7ccd4",
+                borderRadius: 6,
+                background:
+                  "#ffffff",
+                cursor:
+                  "pointer",
+                userSelect:
+                  "none",
+                fontSize: 14,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={
+                  showHeadWordLines
+                }
+                onChange={(event) =>
+                  setShowHeadWordLines(
+                    event.target
+                      .checked,
+                  )
+                }
+              />
+
+              Show head-word lines
+            </label>
+
             <button
   type="button"
   className="undo-button"
@@ -5646,6 +6490,7 @@ function exportTreeAsLatex() {
   value={{
     showNodeBoxes,
     showMovementArrows,
+    showHeadWordLines,
   }}
 >
   <UndoContext.Provider
@@ -5653,7 +6498,7 @@ function exportTreeAsLatex() {
   >
   <ReactFlow
     nodes={nodes}
-    edges={edges}
+    edges={displayedEdges}
     nodeTypes={nodeTypes}
     edgeTypes={edgeTypes}
     onNodesChange={onNodesChange}
