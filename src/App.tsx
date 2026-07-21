@@ -130,6 +130,7 @@ const projectionChains: Record<
 > = {
   CP: ["CP", "C′", "C"],
   TP: ["TP", "T′", "T"],
+  DP: ["DP", "D′", "D"],
   NP: ["NP", "N′", "N"],
   VP: ["VP", "V′", "V"],
   PP: ["PP", "P′", "P"],
