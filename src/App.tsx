@@ -572,9 +572,6 @@ function SyntaxNodeComponent({
 
   const {
     showNodeBoxes,
-    showHeadWordLines,
-    collapseUnusedBarLevels,
-    treeLayoutMode,
     requestAutoBalance,
   } = useContext(
     DisplayOptionsContext,
