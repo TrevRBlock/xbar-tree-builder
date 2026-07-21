@@ -1,0 +1,515 @@
+* {
+  box-sizing: border-box;
+}
+
+button {
+  font: inherit;
+}
+
+.tree-builder {
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr);
+  width: 100%;
+  height: 100vh;
+  background: #eef1f5;
+  color: #20242a;
+}
+
+.node-palette {
+  height: 100vh;
+  padding: 22px;
+  overflow-y: auto;
+  background: #ffffff;
+  border-right: 1px solid #d5dae2;
+  box-shadow: 4px 0 18px rgba(0, 0, 0, 0.05);
+  z-index: 2;
+}
+
+.palette-header {
+  padding-bottom: 18px;
+  border-bottom: 1px solid #d5dae2;
+}
+
+.palette-header h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.palette-header p {
+  margin: 8px 0 0;
+  color: #606a78;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.palette-section {
+  margin-top: 24px;
+}
+
+.palette-section h2,
+.instructions h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.palette-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.word-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.palette-card {
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #aeb6c2;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #20242a;
+  cursor: grab;
+  font-weight: 700;
+  text-align: center;
+}
+
+.palette-card:hover {
+  border-color: #313946;
+  transform: translateY(-1px);
+}
+
+.palette-card:active {
+  cursor: grabbing;
+}
+
+.phrase-palette-card {
+  background: #e9f1ff;
+  border-color: #8faee0;
+}
+
+.head-palette-card {
+  background: #f2ebff;
+  border-color: #aa91d6;
+}
+
+.word-palette-card {
+  min-width: 60px;
+  background: #fff8dc;
+  border-color: #c7ae60;
+  font-weight: 500;
+}
+
+.sentence-text {
+  margin: 0 0 12px;
+  padding: 10px;
+  background: #f4f5f7;
+  border-radius: 7px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.instructions {
+  margin-top: 26px;
+  padding: 15px;
+  background: #f4f5f7;
+  border-radius: 9px;
+}
+
+.instructions ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.instructions li {
+  margin: 7px 0;
+  color: #505966;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.workspace {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.workspace-toolbar {
+  display: flex;
+  min-height: 88px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px 22px;
+  background: #ffffff;
+  border-bottom: 1px solid #d5dae2;
+}
+
+.workspace-toolbar h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.workspace-toolbar p {
+  margin: 5px 0 0;
+  color: #697281;
+  font-size: 13px;
+}
+
+.toolbar-buttons {
+  display: flex;
+  gap: 9px;
+}
+
+.toolbar-buttons button {
+  padding: 9px 13px;
+  border: 1px solid #aeb6c2;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #20242a;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.toolbar-buttons button:hover {
+  background: #eef1f5;
+}
+
+.toolbar-buttons .danger-button {
+  color: #8a2e2e;
+  border-color: #c98f8f;
+}
+
+.flow-canvas {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+.react-flow {
+  background: #f8f9fb;
+}
+
+/* Tree nodes */
+
+.syntax-node {
+  position: relative;
+  display: flex;
+  width: max-content;
+  min-width: 44px;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 10px;
+  border: 2px solid #727d8c;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow:
+    0 4px 10px
+    rgba(0, 0, 0, 0.09);
+  cursor: grab;
+}
+
+.syntax-node:active {
+  cursor: grabbing;
+}
+
+.phrase-node {
+  background: #e9f1ff;
+  border-color: #537dbd;
+}
+
+.head-node {
+  background: #f2ebff;
+  border-color: #7959aa;
+}
+
+.word-node {
+  width: max-content;
+  min-width: 44px;
+  background: #fff8dc;
+  border-color: #a98b31;
+  border-radius: 4px;
+  font-family:
+    Georgia,
+    "Times New Roman",
+    serif;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.selected-syntax-node {
+  outline: 3px solid rgba(35, 99, 180, 0.3);
+  outline-offset: 3px;
+}
+
+.syntax-node-label {
+  white-space: nowrap;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.word-node .syntax-node-label {
+  font-weight: 400;
+}
+
+.syntax-handle {
+  width: 11px;
+  height: 11px;
+  border: 2px solid #ffffff;
+  background: #333b47;
+}
+
+.react-flow__edge-path {
+  stroke: #333b47;
+}
+
+.react-flow__edge.selected
+  .react-flow__edge-path {
+  stroke: #b23a3a;
+  stroke-width: 3;
+}
+
+@media (max-width: 800px) {
+  .tree-builder {
+    grid-template-columns: 230px minmax(0, 1fr);
+  }
+
+  .node-palette {
+    padding: 15px;
+  }
+
+  .palette-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+.react-flow__node:not(.dragging) {
+  transition: transform 180ms ease;
+}
+
+.wordInput-node {
+  width: max-content;
+  min-width: 44px;
+  background: #fffdf3;
+  border-color: #a98b31;
+  border-radius: 6px;
+  font-family:
+    Georgia,
+    "Times New Roman",
+    serif;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.word-input {
+  width: 140px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #b8a15f;
+  border-radius: 5px;
+  background: #ffffff;
+  color: #20242a;
+  font-family:
+    Georgia,
+    "Times New Roman",
+    serif;
+  font-size: 16px;
+  text-align: center;
+  outline: none;
+}
+
+.word-input:focus {
+  border-color: #6d5718;
+  box-shadow:
+    0 0 0 3px
+    rgba(169, 139, 49, 0.2);
+}
+
+.word-input::placeholder {
+  color: #9a927c;
+  font-style: italic;
+}
+
+.syntax-node-label {
+  display: inline-block;
+  min-width: 1ch;
+  white-space: nowrap;
+  font-size: 16px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.word-node .syntax-node-label,
+.wordInput-node .syntax-node-label {
+  font-family:
+    Georgia,
+    "Times New Roman",
+    serif;
+  font-weight: 400;
+}
+
+.node-edit-wrapper {
+  display: inline-grid;
+  min-width: 1ch;
+  align-items: center;
+}
+
+.node-edit-sizer,
+.editable-node-input {
+  grid-area: 1 / 1;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: center;
+  white-space: pre;
+}
+
+.node-edit-sizer {
+  min-width: 1ch;
+  padding: 2px 1px;
+  visibility: hidden;
+}
+
+.editable-node-input {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 1px;
+  border: 0;
+  border-bottom: 1px solid #6e7681;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  outline: none;
+}
+
+.editable-node-input:focus {
+  border-bottom-color: #20242a;
+  box-shadow: none;
+}
+
+.editing-syntax-node {
+  cursor: text;
+  outline:
+    3px solid
+    rgba(35, 99, 180, 0.18);
+  outline-offset: 2px;
+}
+
+.attachment-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    rgba(24, 29, 37, 0.48);
+}
+
+.attachment-dialog {
+  width: min(480px, 100%);
+  padding: 24px;
+  border: 1px solid #cbd1da;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow:
+    0 18px 55px
+    rgba(0, 0, 0, 0.2);
+}
+
+.attachment-dialog h2 {
+  margin: 0 0 12px;
+  font-size: 21px;
+}
+
+.attachment-dialog > p {
+  margin: 0;
+  color: #424b58;
+  line-height: 1.55;
+}
+
+.attachment-explanations {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+  padding: 14px;
+  border-radius: 8px;
+  background: #f3f5f8;
+}
+
+.attachment-explanations p {
+  margin: 0;
+  color: #505966;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.attachment-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.attachment-dialog-actions button {
+  padding: 9px 15px;
+  border: 1px solid #9ea7b4;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #20242a;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.attachment-dialog-actions button:hover {
+  background: #edf1f6;
+}
+
+.attachment-dialog-actions .main-button {
+  border-color: #315f9c;
+  background: #315f9c;
+  color: #ffffff;
+}
+
+.attachment-dialog-actions
+  .main-button:hover {
+  background: #244b7e;
+}
+
+.attachment-dialog-actions
+  .cancel-attachment-button {
+  margin-left: auto;
+  color: #626b78;
+}
+
+/*
+ * Remove editing handles and selection
+ * outlines from downloaded PNG files.
+ */
+
+.exporting-tree .syntax-handle {
+  opacity: 0;
+}
+
+.exporting-tree
+  .selected-syntax-node {
+  outline: none;
+}
+
+.exporting-tree
+  .react-flow__edge.selected
+  .react-flow__edge-path {
+  stroke: #333b47;
+  stroke-width: 2;
+}
