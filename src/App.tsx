@@ -107,6 +107,7 @@ interface PaletteItem {
 type MaximalProjection =
   | "CP"
   | "TP"
+  | "DP"
   | "NP"
   | "VP"
   | "PP"
@@ -4321,7 +4322,12 @@ function loadShowNodeBoxes(): boolean {
       );
 
     if (savedValue === null) {
-      return true;
+      const hasSavedTree =
+        window.localStorage.getItem(
+          TREE_SESSION_STORAGE_KEY,
+        ) !== null;
+
+      return hasSavedTree;
     }
 
     return savedValue === "true";
@@ -4424,6 +4430,497 @@ interface SavedTreeSession {
   nextNodeNumber: number;
 }
 
+function createDemoTreeSession():
+  SavedTreeSession {
+  function createDemoNode(
+    nodeNumber: number,
+    label: string,
+    kind: NodeKind,
+    x: number,
+    y: number,
+    options?: {
+      isLowerCopy?: boolean;
+      draggable?: boolean;
+      textStrikethrough?: boolean;
+    },
+  ): SyntaxNode {
+    return {
+      id:
+        `syntax-node-${nodeNumber}`,
+      type: "syntaxNode",
+      position: {
+        x,
+        y,
+      },
+      data: {
+        label,
+        kind,
+        isLowerCopy:
+          options?.isLowerCopy,
+        textStrikethrough:
+          options?.textStrikethrough,
+      },
+      draggable:
+        options?.draggable,
+      selected: false,
+      dragging: false,
+    };
+  }
+
+  function createDemoEdge(
+    sourceNumber: number,
+    targetNumber: number,
+    siblingOrder = 0,
+    hidden = false,
+  ): Edge {
+    return {
+      id:
+        `edge-syntax-node-${sourceNumber}-syntax-node-${targetNumber}`,
+      source:
+        `syntax-node-${sourceNumber}`,
+      target:
+        `syntax-node-${targetNumber}`,
+      type: "tree",
+      hidden,
+      data: {
+        edgeKind: "tree",
+        siblingOrder,
+      },
+    };
+  }
+
+  function createDemoMovementEdge(
+    sourceNumber: number,
+    targetNumber: number,
+  ): Edge {
+    return {
+      id:
+        `movement-syntax-node-${sourceNumber}-syntax-node-${targetNumber}`,
+      source:
+        `syntax-node-${sourceNumber}`,
+      target:
+        `syntax-node-${targetNumber}`,
+      sourceHandle:
+        "movement-source",
+      targetHandle:
+        "movement-target",
+      type: "movement",
+      data: {
+        edgeKind: "movement",
+      },
+      markerEnd: {
+        type:
+          MarkerType.ArrowClosed,
+        color: "#8b2f3f",
+        width: 18,
+        height: 18,
+      },
+      style: {
+        stroke: "#8b2f3f",
+        strokeWidth: 2.25,
+        strokeDasharray: "7 4",
+      },
+      zIndex: 0,
+      selectable: false,
+    };
+  }
+
+  /*
+   * Demonstration tree:
+   *
+   * CP
+   *  └─ C′
+   *     ├─ C → -Q
+   *     └─ TP
+   *        ├─ NP → N′ → N → Trevor
+   *        └─ T′
+   *           ├─ T → +Past
+   *           └─ ProgP
+   *              └─ Prog′
+   *                 ├─ Prog → is
+   *                 └─ VoiceP
+   *                    ├─ NP → △ Trevor
+   *                    └─ Voice′
+   *                       ├─ Voice
+   *                       │  ├─ Voice → +Active
+   *                       │  └─ V → eating
+   *                       └─ VP
+   *                          ├─ NP → △ Trevor
+   *                          └─ V′
+   *                             ├─ V → △ eating
+   *                             └─ NP → N′ → N → pancakes
+   */
+  const demoNodes:
+    SyntaxNode[] = [
+    createDemoNode(
+      1,
+      "CP",
+      "phrase",
+      460,
+      30,
+    ),
+    createDemoNode(
+      2,
+      "C′",
+      "phrase",
+      460,
+      85,
+    ),
+    createDemoNode(
+      3,
+      "C",
+      "head",
+      80,
+      140,
+    ),
+    createDemoNode(
+      4,
+      "-Q",
+      "wordInput",
+      80,
+      195,
+    ),
+    createDemoNode(
+      5,
+      "TP",
+      "phrase",
+      520,
+      140,
+    ),
+    createDemoNode(
+      6,
+      "NP",
+      "phrase",
+      160,
+      195,
+    ),
+    createDemoNode(
+      7,
+      "N′",
+      "phrase",
+      160,
+      250,
+    ),
+    createDemoNode(
+      8,
+      "N",
+      "head",
+      160,
+      305,
+    ),
+    createDemoNode(
+      9,
+      "Trevor",
+      "wordInput",
+      160,
+      360,
+    ),
+    createDemoNode(
+      10,
+      "T′",
+      "phrase",
+      560,
+      195,
+    ),
+    createDemoNode(
+      11,
+      "T",
+      "head",
+      260,
+      250,
+    ),
+    createDemoNode(
+      12,
+      "+Past",
+      "wordInput",
+      260,
+      305,
+    ),
+    createDemoNode(
+      13,
+      "ProgP",
+      "phrase",
+      610,
+      250,
+    ),
+    createDemoNode(
+      14,
+      "Prog′",
+      "phrase",
+      610,
+      305,
+    ),
+    createDemoNode(
+      15,
+      "Prog",
+      "head",
+      360,
+      360,
+    ),
+    createDemoNode(
+      16,
+      "is",
+      "wordInput",
+      360,
+      415,
+    ),
+    createDemoNode(
+      17,
+      "VoiceP",
+      "phrase",
+      650,
+      360,
+    ),
+    createDemoNode(
+      18,
+      "NP",
+      "phrase",
+      490,
+      415,
+      {
+        isLowerCopy: true,
+        draggable: false,
+      },
+    ),
+    createDemoNode(
+      19,
+      "Trevor",
+      "movementSummary",
+      490,
+      470,
+      {
+        isLowerCopy: true,
+        draggable: false,
+        textStrikethrough: true,
+      },
+    ),
+    createDemoNode(
+      20,
+      "Voice′",
+      "phrase",
+      720,
+      415,
+    ),
+    createDemoNode(
+      21,
+      "Voice",
+      "head",
+      570,
+      470,
+    ),
+    createDemoNode(
+      22,
+      "Voice",
+      "head",
+      520,
+      525,
+    ),
+    createDemoNode(
+      23,
+      "+Active",
+      "wordInput",
+      520,
+      580,
+    ),
+    createDemoNode(
+      24,
+      "V",
+      "head",
+      620,
+      525,
+    ),
+    createDemoNode(
+      25,
+      "eating",
+      "wordInput",
+      620,
+      580,
+    ),
+    createDemoNode(
+      26,
+      "VP",
+      "phrase",
+      790,
+      470,
+    ),
+    createDemoNode(
+      27,
+      "NP",
+      "phrase",
+      690,
+      525,
+      {
+        isLowerCopy: true,
+        draggable: false,
+      },
+    ),
+    createDemoNode(
+      28,
+      "Trevor",
+      "movementSummary",
+      690,
+      580,
+      {
+        isLowerCopy: true,
+        draggable: false,
+        textStrikethrough: true,
+      },
+    ),
+    createDemoNode(
+      29,
+      "V′",
+      "phrase",
+      850,
+      525,
+    ),
+    createDemoNode(
+      30,
+      "V",
+      "head",
+      790,
+      580,
+      {
+        isLowerCopy: true,
+        draggable: false,
+      },
+    ),
+    createDemoNode(
+      31,
+      "eating",
+      "movementSummary",
+      790,
+      635,
+      {
+        isLowerCopy: true,
+        draggable: false,
+        textStrikethrough: true,
+      },
+    ),
+    createDemoNode(
+      32,
+      "NP",
+      "phrase",
+      930,
+      580,
+    ),
+    createDemoNode(
+      33,
+      "N′",
+      "phrase",
+      930,
+      635,
+    ),
+    createDemoNode(
+      34,
+      "N",
+      "head",
+      930,
+      690,
+    ),
+    createDemoNode(
+      35,
+      "pancakes",
+      "wordInput",
+      930,
+      745,
+    ),
+  ];
+
+  const demoEdges: Edge[] = [
+    createDemoEdge(1, 2),
+
+    createDemoEdge(2, 3, 0),
+    createDemoEdge(3, 4),
+    createDemoEdge(2, 5, 1),
+
+    createDemoEdge(5, 6, 0),
+    createDemoEdge(6, 7),
+    createDemoEdge(7, 8),
+    createDemoEdge(8, 9),
+
+    createDemoEdge(5, 10, 1),
+    createDemoEdge(10, 11, 0),
+    createDemoEdge(11, 12),
+    createDemoEdge(10, 13, 1),
+
+    createDemoEdge(13, 14),
+    createDemoEdge(14, 15, 0),
+    createDemoEdge(15, 16),
+    createDemoEdge(14, 17, 1),
+
+    createDemoEdge(17, 18, 0),
+    createDemoEdge(
+      18,
+      19,
+      0,
+      true,
+    ),
+
+    createDemoEdge(17, 20, 1),
+    createDemoEdge(20, 21, 0),
+
+    createDemoEdge(21, 22, 0),
+    createDemoEdge(22, 23),
+    createDemoEdge(21, 24, 1),
+    createDemoEdge(24, 25),
+
+    createDemoEdge(20, 26, 1),
+    createDemoEdge(26, 27, 0),
+    createDemoEdge(
+      27,
+      28,
+      0,
+      true,
+    ),
+
+    createDemoEdge(26, 29, 1),
+    createDemoEdge(29, 30, 0),
+    createDemoEdge(
+      30,
+      31,
+      0,
+      true,
+    ),
+
+    createDemoEdge(29, 32, 1),
+    createDemoEdge(32, 33),
+    createDemoEdge(33, 34),
+    createDemoEdge(34, 35),
+
+    /*
+     * Successive-cyclic subject movement:
+     *
+     * VP subject trace
+     *   → VoiceP subject trace
+     *   → pronounced TP subject
+     */
+    createDemoMovementEdge(
+      28,
+      19,
+    ),
+    createDemoMovementEdge(
+      19,
+      9,
+    ),
+  ];
+
+  const balancedDemoNodes =
+    layoutAllTreeComponents(
+      demoNodes,
+      demoEdges,
+      false,
+      true,
+      "topDown",
+      false,
+    );
+
+  return {
+    nodes: balancedDemoNodes,
+    edges: demoEdges,
+    nextNodeNumber: 36,
+  };
+}
+
 function calculateNextNodeNumber(
   currentNodes: readonly SyntaxNode[],
 ): number {
@@ -4510,7 +5007,7 @@ function loadSavedTreeSession():
       );
 
     if (!savedValue) {
-      return emptySession;
+      return createDemoTreeSession();
     }
 
     const parsedValue =
@@ -7508,6 +8005,52 @@ function attachCreatedHeadAsAdjunct(
   }
 }
 
+  function loadDemoTree() {
+    /*
+     * Loading the demo replaces the current
+     * canvas, but remains undoable.
+     */
+    saveUndoSnapshot();
+
+    cancelScheduledAutoBalance();
+
+    const demoSession =
+      createDemoTreeSession();
+
+    nextNodeNumber.current =
+      demoSession.nextNodeNumber;
+
+    setPendingBarAttachment(null);
+    setSelectionBoxActive(false);
+
+    setShowNodeBoxes(false);
+    setShowMovementArrows(true);
+    setShowHeadWordLines(true);
+    setTreeLayoutMode("topDown");
+    setCollapseUnusedBarLevels(false);
+
+    setNodes(
+      demoSession.nodes,
+    );
+
+    setEdges(
+      demoSession.edges,
+    );
+
+    /*
+     * Fit the complete demonstration tree
+     * after React Flow has rendered it.
+     */
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        reactFlowInstance?.fitView({
+          padding: 0.08,
+          duration: 300,
+        });
+      });
+    });
+  }
+
   function clearCanvas() {
   if (
     nodes.length === 0 &&
@@ -8221,6 +8764,21 @@ function exportTreeAsLatex() {
         The new lexical boxes participate
         in Tab navigation, balancing, PNG
         export, and LaTeX export.
+      </li>
+
+      <li>
+        Click DEMO in the upper-right of
+        the canvas to replace the current
+        tree with the built-in demonstration
+        tree, including the two NP
+        movement arrows. The replacement
+        can be undone.
+      </li>
+
+      <li>
+        The demonstration tree appears
+        automatically the first time the
+        app is opened in a browser.
       </li>
 
       <li>
@@ -9354,6 +9912,25 @@ function exportTreeAsLatex() {
 
       Show head-word lines
     </label>
+
+    <button
+      type="button"
+      onClick={loadDemoTree}
+      title="Replace the current canvas with the demonstration tree"
+      style={{
+        minHeight: 34,
+        marginTop: 3,
+        border:
+          "1px solid #8c96a3",
+        borderRadius: 6,
+        background: "#ffffff",
+        fontWeight: 700,
+        letterSpacing: "0.04em",
+        cursor: "pointer",
+      }}
+    >
+      DEMO
+    </button>
   </div>
 
           <DisplayOptionsContext.Provider
