@@ -4631,7 +4631,7 @@ function createDemoTreeSession():
     ),
     createDemoNode(
       12,
-      "+Past",
+      "-Past",
       "wordInput",
       260,
       305,
