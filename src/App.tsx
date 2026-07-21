@@ -22,6 +22,7 @@ import {
   addEdge,
   getNodesBounds,
   useEdgesState,
+  useNodes,
   useNodesState,
   useReactFlow,
   useUpdateNodeInternals,
@@ -330,6 +331,46 @@ function SyntaxNodeComponent({
           className="syntax-handle"
         />
       )}
+
+      {/*
+       * These invisible handles give movement
+       * arrows a precise bottom-centre anchor.
+       */}
+      <Handle
+        id="movement-source"
+        type="source"
+        position={Position.Bottom}
+        isConnectable={false}
+        className="movement-handle"
+        style={{
+          width: 1,
+          height: 1,
+          minWidth: 1,
+          minHeight: 1,
+          border: 0,
+          background: "transparent",
+          opacity: 0,
+          pointerEvents: "none",
+        }}
+      />
+
+      <Handle
+        id="movement-target"
+        type="target"
+        position={Position.Bottom}
+        isConnectable={false}
+        className="movement-handle"
+        style={{
+          width: 1,
+          height: 1,
+          minWidth: 1,
+          minHeight: 1,
+          border: 0,
+          background: "transparent",
+          opacity: 0,
+          pointerEvents: "none",
+        }}
+      />
     </div>
   );
 }
@@ -343,31 +384,37 @@ function MovementEdge({
   markerEnd,
   style,
 }: EdgeProps) {
+  const currentNodes =
+    useNodes<SyntaxNode>();
+
   /*
-   * Route movement arrows around the
-   * right side of the tree.
+   * Place the lowest part of every movement
+   * arrow beneath the lowest node in the
+   * complete canvas.
    */
-  const verticalDistance =
-    Math.abs(
-      targetY - sourceY,
+  const nodeBounds =
+    getNodesBounds(currentNodes);
+
+  const bottomClearance = 110;
+
+  const routeY =
+    Math.max(
+      nodeBounds.y +
+        nodeBounds.height +
+        bottomClearance,
+      sourceY + bottomClearance,
+      targetY + bottomClearance,
     );
 
-  const sideOffset =
-    Math.max(
-      90,
-      verticalDistance * 0.22,
-    );
-
-  const sideX =
-    Math.max(
-      sourceX,
-      targetX,
-    ) + sideOffset;
-
+  /*
+   * A single cubic curve leaves the lower
+   * copy, passes beneath the complete tree,
+   * and rises to the higher copy.
+   */
   const movementPath = [
     `M ${sourceX},${sourceY}`,
-    `C ${sideX},${sourceY}`,
-    `${sideX},${targetY}`,
+    `C ${sourceX},${routeY}`,
+    `${targetX},${routeY}`,
     `${targetX},${targetY}`,
   ].join(" ");
 
@@ -472,6 +519,201 @@ function getStructuralDescendantIds(
   }
 
   return descendantIds;
+}
+
+function getLexicalHeadTerminalId(
+  rootNodeId: string,
+  currentNodes: readonly SyntaxNode[],
+  currentEdges: readonly Edge[],
+): string | null {
+  const nodeById =
+    new Map(
+      currentNodes.map(
+        (node) => [
+          node.id,
+          node,
+        ],
+      ),
+    );
+
+  const childIdsByParent =
+    new Map<string, string[]>();
+
+  for (const edge of currentEdges) {
+    if (isMovementEdge(edge)) {
+      continue;
+    }
+
+    const childIds =
+      childIdsByParent.get(
+        edge.source,
+      ) ?? [];
+
+    childIdsByParent.set(
+      edge.source,
+      [
+        ...childIds,
+        edge.target,
+      ],
+    );
+  }
+
+  const visitedNodeIds =
+    new Set<string>();
+
+  function followHeadProjection(
+    nodeId: string,
+  ): string | null {
+    if (
+      visitedNodeIds.has(nodeId)
+    ) {
+      return null;
+    }
+
+    visitedNodeIds.add(nodeId);
+
+    const node =
+      nodeById.get(nodeId);
+
+    if (!node) {
+      return null;
+    }
+
+    const childIds =
+      childIdsByParent.get(
+        nodeId,
+      ) ?? [];
+
+    const childNodes =
+      childIds
+        .map((childId) =>
+          nodeById.get(childId),
+        )
+        .filter(
+          (
+            childNode,
+          ): childNode is SyntaxNode =>
+            Boolean(childNode),
+        );
+
+    /*
+     * A lexical head such as N, V, or T
+     * normally dominates the terminal word.
+     */
+    if (node.data.kind === "head") {
+      const lexicalChild =
+        childNodes.find(
+          (childNode) =>
+            childNode.data.kind ===
+              "word" ||
+            childNode.data.kind ===
+              "wordInput",
+        );
+
+      if (lexicalChild) {
+        return lexicalChild.id;
+      }
+    }
+
+    /*
+     * Prefer the direct head daughter of
+     * a bar level, such as N under N′.
+     */
+    const directHeadChild =
+      childNodes.find(
+        (childNode) =>
+          childNode.data.kind ===
+          "head",
+      );
+
+    if (directHeadChild) {
+      const terminalId =
+        followHeadProjection(
+          directHeadChild.id,
+        );
+
+      if (terminalId) {
+        return terminalId;
+      }
+    }
+
+    /*
+     * With adjunction, the lower bar has
+     * the same label as the upper bar.
+     */
+    const repeatedBarChild =
+      childNodes.find(
+        (childNode) =>
+          childNode.data.kind ===
+            "phrase" &&
+          childNode.data.label ===
+            node.data.label,
+      );
+
+    if (repeatedBarChild) {
+      const terminalId =
+        followHeadProjection(
+          repeatedBarChild.id,
+        );
+
+      if (terminalId) {
+        return terminalId;
+      }
+    }
+
+    /*
+     * A maximal projection normally
+     * dominates its corresponding X′.
+     */
+    const barLevelChild =
+      childNodes.find(
+        (childNode) =>
+          childNode.data.kind ===
+            "phrase" &&
+          isBarLevelLabel(
+            childNode.data.label,
+          ),
+      );
+
+    if (barLevelChild) {
+      const terminalId =
+        followHeadProjection(
+          barLevelChild.id,
+        );
+
+      if (terminalId) {
+        return terminalId;
+      }
+    }
+
+    /*
+     * Fallback for edited or nonstandard
+     * labels: search the remaining branches.
+     */
+    for (const childNode of childNodes) {
+      const terminalId =
+        followHeadProjection(
+          childNode.id,
+        );
+
+      if (terminalId) {
+        return terminalId;
+      }
+    }
+
+    if (
+      node.data.kind === "word" ||
+      node.data.kind === "wordInput"
+    ) {
+      return node.id;
+    }
+
+    return null;
+  }
+
+  return followHeadProjection(
+    rootNodeId,
+  );
 }
 
 function wouldCreateCycle(
@@ -2422,12 +2664,39 @@ function moveAttachedSubtree(
     },
   };
 
+  /*
+   * Attach the movement arrow to the
+   * lexical terminal at the bottom of
+   * the lower and higher copies.
+   *
+   * For NP → N′ → N → WORD, the arrow
+   * runs from the bottom of the lower
+   * WORD to the bottom of the moved WORD.
+   */
+  const lowerLexicalTerminalId =
+    getLexicalHeadTerminalId(
+      draggedNode.id,
+      originalNodes,
+      edges,
+    ) ?? draggedNode.id;
+
+  const higherLexicalTerminalId =
+    clonedIdByOriginalId.get(
+      lowerLexicalTerminalId,
+    ) ?? clonedRootId;
+
   const movementArrow:
     Edge = {
     id:
-      `movement-${draggedNode.id}-${clonedRootId}`,
-    source: draggedNode.id,
-    target: clonedRootId,
+      `movement-${lowerLexicalTerminalId}-${higherLexicalTerminalId}`,
+    source:
+      lowerLexicalTerminalId,
+    target:
+      higherLexicalTerminalId,
+    sourceHandle:
+      "movement-source",
+    targetHandle:
+      "movement-target",
     type: "movement",
     data: {
       edgeKind: "movement",
@@ -2444,7 +2713,7 @@ function moveAttachedSubtree(
       strokeWidth: 2.25,
       strokeDasharray: "7 4",
     },
-    zIndex: 3,
+    zIndex: 0,
     selectable: false,
   };
 
