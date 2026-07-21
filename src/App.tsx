@@ -119,14 +119,6 @@ const headLabels: PaletteItem[] = [
   { label: "Qual", kind: "head" },
 ];
 
-const sentenceWords: PaletteItem[] = [
-  { label: "The", kind: "word" },
-  { label: "students", kind: "word" },
-  { label: "read", kind: "word" },
-  { label: "the", kind: "word" },
-  { label: "article", kind: "word" },
-];
-
 function SyntaxNodeComponent({
   id,
   data,
@@ -1213,6 +1205,72 @@ function waitForTreePaint():
   );
 }
 
+function getNodeAtFlowPosition(
+  position: {
+    x: number;
+    y: number;
+  },
+  currentNodes: readonly SyntaxNode[],
+): SyntaxNode | null {
+  const matchingNodes =
+    currentNodes.filter((node) => {
+      if (
+        node.data.kind === "word" ||
+        node.data.kind === "wordInput"
+      ) {
+        return false;
+      }
+
+      const width =
+        node.measured?.width ??
+        getSyntaxNodeWidth(node);
+
+      const height =
+        node.measured?.height ?? 40;
+
+      return (
+        position.x >= node.position.x &&
+        position.x <=
+          node.position.x + width &&
+        position.y >= node.position.y &&
+        position.y <=
+          node.position.y + height
+      );
+    });
+
+  /*
+   * In the unlikely case that nodes overlap,
+   * use the smallest matching node.
+   */
+  matchingNodes.sort(
+    (firstNode, secondNode) => {
+      const firstArea =
+        (
+          firstNode.measured?.width ??
+          getSyntaxNodeWidth(firstNode)
+        ) *
+        (
+          firstNode.measured?.height ??
+          40
+        );
+
+      const secondArea =
+        (
+          secondNode.measured?.width ??
+          getSyntaxNodeWidth(secondNode)
+        ) *
+        (
+          secondNode.measured?.height ??
+          40
+        );
+
+      return firstArea - secondArea;
+    },
+  );
+
+  return matchingNodes[0] ?? null;
+}
+
 function TreeBuilder() {
   const [
     nodes,
@@ -1334,17 +1392,19 @@ function TreeBuilder() {
   }
 
   const updatedEdges = addEdge(
-    {
-      source: parentNode.id,
-      target: draggedNode.id,
-      type: "straight",
-      data: {
-        siblingOrder:
-          newSiblingOrder,
-      },
+  {
+    id:
+      `edge-${parentNode.id}-${draggedNode.id}`,
+    source: parentNode.id,
+    target: draggedNode.id,
+    type: "straight",
+    data: {
+      siblingOrder:
+        newSiblingOrder,
     },
-    edgesWithoutOldParent,
-  );
+  },
+  edgesWithoutOldParent,
+);
 
   const nodeSnapshot =
     nodes.map((node) => {
@@ -1495,20 +1555,22 @@ function attachAsAdjunct(
    */
   if (incomingBarEdge) {
     updatedEdges = addEdge(
-      {
-        source:
-          incomingBarEdge.source,
-        target: newBarId,
-        type: "straight",
-        data: {
-          siblingOrder:
-            getSiblingOrder(
-              incomingBarEdge,
-            ),
-        },
-      },
-      updatedEdges,
-    );
+  {
+    id:
+      `edge-${incomingBarEdge.source}-${newBarId}`,
+    source:
+      incomingBarEdge.source,
+    target: newBarId,
+    type: "straight",
+    data: {
+      siblingOrder:
+        getSiblingOrder(
+          incomingBarEdge,
+        ),
+    },
+  },
+  updatedEdges,
+);
   }
 
   /*
@@ -1526,28 +1588,32 @@ function attachAsAdjunct(
       : adjunctNode.id;
 
   updatedEdges = addEdge(
-    {
-      source: newBarId,
-      target: leftDaughterId,
-      type: "straight",
-      data: {
-        siblingOrder: 0,
-      },
+  {
+    id:
+      `edge-${newBarId}-${leftDaughterId}`,
+    source: newBarId,
+    target: leftDaughterId,
+    type: "straight",
+    data: {
+      siblingOrder: 0,
     },
-    updatedEdges,
-  );
+  },
+  updatedEdges,
+);
 
   updatedEdges = addEdge(
-    {
-      source: newBarId,
-      target: rightDaughterId,
-      type: "straight",
-      data: {
-        siblingOrder: 1,
-      },
+  {
+    id:
+      `edge-${newBarId}-${rightDaughterId}`,
+    source: newBarId,
+    target: rightDaughterId,
+    type: "straight",
+    data: {
+      siblingOrder: 1,
     },
-    updatedEdges,
-  );
+  },
+  updatedEdges,
+);
 
   const nodeSnapshot: SyntaxNode[] = [
     ...nodes.map((node) => {
@@ -1776,6 +1842,81 @@ function attachAsAdjunct(
       "copy";
   }
 
+  function attachCreatedSubtreeDirectly(
+  parentNode: SyntaxNode,
+  draggedRootId: string,
+  createdNodes: SyntaxNode[],
+  createdEdges: Edge[],
+  placeOnLeft: boolean,
+  draggedPosition: {
+    x: number;
+    y: number;
+  },
+) {
+  const nodeSnapshot = [
+    ...nodes,
+    ...createdNodes,
+  ].map((node) => {
+    if (node.id !== draggedRootId) {
+      return node;
+    }
+
+    return {
+      ...node,
+      position: draggedPosition,
+    };
+  });
+
+  const edgeSnapshot = [
+    ...edges,
+    ...createdEdges,
+  ];
+
+  const existingSisterEdges =
+    edgeSnapshot.filter(
+      (edge) =>
+        edge.source === parentNode.id,
+    );
+
+  const existingOrders =
+    existingSisterEdges.map(
+      getSiblingOrder,
+    );
+
+  let newSiblingOrder = 0;
+
+  if (existingOrders.length > 0) {
+    newSiblingOrder =
+      placeOnLeft
+        ? Math.min(...existingOrders) - 1
+        : Math.max(...existingOrders) + 1;
+  }
+
+  const updatedEdges = addEdge(
+    {
+      id:
+        `edge-${parentNode.id}-${draggedRootId}`,
+      source: parentNode.id,
+      target: draggedRootId,
+      type: "straight",
+      data: {
+        siblingOrder: newSiblingOrder,
+      },
+    },
+    edgeSnapshot,
+  );
+
+  const balancedNodes =
+    layoutTreeComponent(
+      nodeSnapshot,
+      updatedEdges,
+      parentNode.id,
+    );
+
+  setNodes(balancedNodes);
+  setEdges(updatedEdges);
+}
+
   function handleCanvasDrop(
   event: DragEvent<HTMLDivElement>,
 ) {
@@ -1800,14 +1941,31 @@ function attachAsAdjunct(
     ) as PaletteItem;
 
     const dropPosition =
-      reactFlowInstance.screenToFlowPosition({
-        x: event.clientX,
-        y: event.clientY,
-      });
+      reactFlowInstance
+        .screenToFlowPosition({
+          x: event.clientX,
+          y: event.clientY,
+        });
 
     /*
-     * Dragging a maximal projection creates
-     * the full XP → X′ → X chain.
+     * Check the existing canvas before
+     * adding the new nodes.
+     */
+    const targetNode =
+      getNodeAtFlowPosition(
+        dropPosition,
+        nodes,
+      );
+
+    const createdNodes: SyntaxNode[] =
+      [];
+
+    const createdEdges: Edge[] = [];
+
+    let draggedRootId = "";
+
+    /*
+     * Create an XP → X′ → X → word chain.
      */
     if (
       item.kind === "phrase" &&
@@ -1823,204 +1981,270 @@ function attachAsAdjunct(
         nextNodeNumber.current;
 
       const phraseId =
-  `syntax-node-${firstNodeNumber}`;
+        `syntax-node-${firstNodeNumber}`;
 
-const intermediateId =
-  `syntax-node-${firstNodeNumber + 1}`;
+      const intermediateId =
+        `syntax-node-${firstNodeNumber + 1}`;
 
-const headId =
-  `syntax-node-${firstNodeNumber + 2}`;
+      const headId =
+        `syntax-node-${firstNodeNumber + 2}`;
 
-const wordInputId =
-  `syntax-node-${firstNodeNumber + 3}`;
+      const wordInputId =
+        `syntax-node-${firstNodeNumber + 3}`;
 
-nextNodeNumber.current += 4;
+      nextNodeNumber.current += 4;
 
-      const newNodes: SyntaxNode[] = [
-  {
-    id: phraseId,
-    type: "syntaxNode",
-    position: {
-      x: dropPosition.x,
-      y: dropPosition.y,
-    },
-    data: {
-      label: phraseLabel,
-      kind: "phrase",
-    },
-  },
-  {
-    id: intermediateId,
-    type: "syntaxNode",
-    position: {
-      x: dropPosition.x,
-      y: dropPosition.y + 100,
-    },
-    data: {
-      label: intermediateLabel,
-      kind: "phrase",
-    },
-  },
-  {
-    id: headId,
-    type: "syntaxNode",
-    position: {
-      x: dropPosition.x,
-      y: dropPosition.y + 200,
-    },
-    data: {
-      label: headLabel,
-      kind: "head",
-    },
-  },
-  {
-    id: wordInputId,
-    type: "syntaxNode",
-    position: {
-      x: dropPosition.x,
-      y: dropPosition.y + 300,
-    },
-    data: {
-      label: "",
-      kind: "wordInput",
-    },
-  },
-];
+      draggedRootId = phraseId;
 
-      const newEdges: Edge[] = [
-  {
-    id:
-      `edge-${phraseId}-${intermediateId}`,
-    source: phraseId,
-    target: intermediateId,
-    type: "straight",
-    data: {
-      siblingOrder: 0,
-    },
-  },
-  {
-    id:
-      `edge-${intermediateId}-${headId}`,
-    source: intermediateId,
-    target: headId,
-    type: "straight",
-    data: {
-      siblingOrder: 0,
-    },
-  },
-  {
-    id:
-      `edge-${headId}-${wordInputId}`,
-    source: headId,
-    target: wordInputId,
-    type: "straight",
-    data: {
-      siblingOrder: 0,
-    },
-  },
-];
+      createdNodes.push(
+        {
+          id: phraseId,
+          type: "syntaxNode",
+          position: {
+            x: dropPosition.x,
+            y: dropPosition.y,
+          },
+          data: {
+            label: phraseLabel,
+            kind: "phrase",
+          },
+        },
+        {
+          id: intermediateId,
+          type: "syntaxNode",
+          position: {
+            x: dropPosition.x,
+            y:
+              dropPosition.y +
+              LEVEL_GAP,
+          },
+          data: {
+            label: intermediateLabel,
+            kind: "phrase",
+          },
+        },
+        {
+          id: headId,
+          type: "syntaxNode",
+          position: {
+            x: dropPosition.x,
+            y:
+              dropPosition.y +
+              LEVEL_GAP * 2,
+          },
+          data: {
+            label: headLabel,
+            kind: "head",
+          },
+        },
+        {
+          id: wordInputId,
+          type: "syntaxNode",
+          position: {
+            x: dropPosition.x,
+            y:
+              dropPosition.y +
+              LEVEL_GAP * 3,
+          },
+          data: {
+            label: "",
+            kind: "wordInput",
+          },
+        },
+      );
 
+      createdEdges.push(
+        {
+          id:
+            `edge-${phraseId}-${intermediateId}`,
+          source: phraseId,
+          target: intermediateId,
+          type: "straight",
+          data: {
+            siblingOrder: 0,
+          },
+        },
+        {
+          id:
+            `edge-${intermediateId}-${headId}`,
+          source: intermediateId,
+          target: headId,
+          type: "straight",
+          data: {
+            siblingOrder: 0,
+          },
+        },
+        {
+          id:
+            `edge-${headId}-${wordInputId}`,
+          source: headId,
+          target: wordInputId,
+          type: "straight",
+          data: {
+            siblingOrder: 0,
+          },
+        },
+      );
+    } else if (item.kind === "head") {
+      /*
+       * Create an individual head with a
+       * blank lexical daughter.
+       */
+      const firstNodeNumber =
+        nextNodeNumber.current;
+
+      const headId =
+        `syntax-node-${firstNodeNumber}`;
+
+      const wordInputId =
+        `syntax-node-${firstNodeNumber + 1}`;
+
+      nextNodeNumber.current += 2;
+
+      draggedRootId = headId;
+
+      createdNodes.push(
+        {
+          id: headId,
+          type: "syntaxNode",
+          position: {
+            x: dropPosition.x,
+            y: dropPosition.y,
+          },
+          data: {
+            label: item.label,
+            kind: "head",
+          },
+        },
+        {
+          id: wordInputId,
+          type: "syntaxNode",
+          position: {
+            x: dropPosition.x,
+            y:
+              dropPosition.y +
+              LEVEL_GAP,
+          },
+          data: {
+            label: "",
+            kind: "wordInput",
+          },
+        },
+      );
+
+      createdEdges.push({
+        id:
+          `edge-${headId}-${wordInputId}`,
+        source: headId,
+        target: wordInputId,
+        type: "straight",
+        data: {
+          siblingOrder: 0,
+        },
+      });
+    } else {
+      /*
+       * Fallback for any individual
+       * palette item.
+       */
+      const nodeId =
+        `syntax-node-${nextNodeNumber.current}`;
+
+      nextNodeNumber.current += 1;
+
+      draggedRootId = nodeId;
+
+      createdNodes.push({
+        id: nodeId,
+        type: "syntaxNode",
+        position: dropPosition,
+        data: {
+          label: item.label,
+          kind: item.kind,
+        },
+      });
+    }
+
+    /*
+     * Empty-canvas drop: keep the new
+     * subtree separate.
+     */
+    if (!targetNode) {
       setNodes((currentNodes) => [
         ...currentNodes,
-        ...newNodes,
+        ...createdNodes,
       ]);
 
       setEdges((currentEdges) => [
         ...currentEdges,
-        ...newEdges,
+        ...createdEdges,
       ]);
 
       return;
     }
-    /*
- * Dragging an individual lexical head
- * creates the head and an editable
- * terminal daughter.
- */
-if (item.kind === "head") {
-  const firstNodeNumber =
-    nextNodeNumber.current;
 
-  const headId =
-    `syntax-node-${firstNodeNumber}`;
+    const targetCentreX =
+      targetNode.position.x +
+      (
+        targetNode.measured?.width ??
+        getSyntaxNodeWidth(targetNode)
+      ) /
+        2;
 
-  const wordInputId =
-    `syntax-node-${firstNodeNumber + 1}`;
+    const placeOnLeft =
+      dropPosition.x <
+      targetCentreX;
 
-  nextNodeNumber.current += 2;
+    const draggedRootNode =
+      createdNodes.find(
+        (node) =>
+          node.id === draggedRootId,
+      );
 
-  const headNode: SyntaxNode = {
-    id: headId,
-    type: "syntaxNode",
-    position: {
-      x: dropPosition.x,
-      y: dropPosition.y,
-    },
-    data: {
-      label: item.label,
-      kind: "head",
-    },
-  };
-
-  const wordInputNode: SyntaxNode = {
-    id: wordInputId,
-    type: "syntaxNode",
-    position: {
-      x: dropPosition.x - 35,
-      y: dropPosition.y + 100,
-    },
-    data: {
-      label: "",
-      kind: "wordInput",
-    },
-  };
-
-  const wordInputEdge: Edge = {
-    id:
-      `edge-${headId}-${wordInputId}`,
-    source: headId,
-    target: wordInputId,
-    type: "straight",
-    data: {
-      siblingOrder: 0,
-    },
-  };
-
-  setNodes((currentNodes) => [
-    ...currentNodes,
-    headNode,
-    wordInputNode,
-  ]);
-
-  setEdges((currentEdges) => [
-    ...currentEdges,
-    wordInputEdge,
-  ]);
-
-  return;
-}
+    const draggedPosition =
+      draggedRootNode?.position ??
+      dropPosition;
 
     /*
-     * Heads and sentence words still create
-     * one individual node.
+     * X′ targets require the existing
+     * complement/adjunct dialog.
      */
-    const newNode: SyntaxNode = {
-      id:
-        `syntax-node-${nextNodeNumber.current}`,
-      type: "syntaxNode",
-      position: dropPosition,
-      data: {
-        label: item.label,
-        kind: item.kind,
-      },
-    };
+    if (
+      isBarLevelLabel(
+        targetNode.data.label,
+      )
+    ) {
+      setNodes((currentNodes) => [
+        ...currentNodes,
+        ...createdNodes,
+      ]);
 
-    nextNodeNumber.current += 1;
+      setEdges((currentEdges) => [
+        ...currentEdges,
+        ...createdEdges,
+      ]);
 
-    setNodes((currentNodes) => [
-      ...currentNodes,
-      newNode,
-    ]);
+      setPendingBarAttachment({
+        parentId: targetNode.id,
+        draggedId: draggedRootId,
+        placeOnLeft,
+        draggedPosition,
+      });
+
+      return;
+    }
+
+    /*
+     * Other targets attach immediately.
+     */
+    attachCreatedSubtreeDirectly(
+      targetNode,
+      draggedRootId,
+      createdNodes,
+      createdEdges,
+      placeOnLeft,
+      draggedPosition,
+    );
   } catch {
     // Ignore invalid drag information.
   }
@@ -2234,31 +2458,279 @@ function exportTreeAsLatex() {
         
 
         <section className="instructions">
-          <h2>How to build</h2>
+  <h2>How to use the tree builder</h2>
 
-          <ol>
-            <li>
-  Drag a phrase onto the canvas
-  to create its complete projection
-  chain.
-</li>
+  <details open>
+    <summary>
+      Add phrases and heads
+    </summary>
 
-            <li>
-              Drag from a parent node’s
-              bottom circle.
-            </li>
+    <ul>
+      <li>
+        Drag a phrase label from the
+        sidebar to create its complete
+        projection chain.
+      </li>
 
-            <li>
-              Release on the child node’s
-              top circle.
-            </li>
+      <li>
+        For example, dragging NP creates
+        NP, N′, N, and a blank lexical
+        terminal.
+      </li>
 
-            <li>
-              Select a node or branch and
-              press Delete.
-            </li>
-          </ol>
-        </section>
+      <li>
+        Drag a head label to create the
+        head and a blank lexical terminal
+        beneath it.
+      </li>
+
+      <li>
+        Drop an item on empty canvas
+        space to create a separate
+        subtree.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Attach a new subtree
+    </summary>
+
+    <ul>
+      <li>
+        Drag a phrase or head directly
+        from the sidebar onto an existing
+        node to create and attach it in
+        one step.
+      </li>
+
+      <li>
+        Drop it on the left side of the
+        parent to make it the left
+        daughter.
+      </li>
+
+      <li>
+        Drop it on the right side of the
+        parent to make it the right
+        daughter.
+      </li>
+
+      <li>
+        The tree automatically balances
+        after the new subtree is attached.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Move and reattach existing nodes
+    </summary>
+
+    <ul>
+      <li>
+        Drag an existing node or subtree
+        onto another node to attach it as
+        a daughter.
+      </li>
+
+      <li>
+        Dropping on the left or right
+        side determines its position
+        among the other daughters.
+      </li>
+
+      <li>
+        A node can have only one parent.
+        Reattaching it removes its earlier
+        parent connection.
+      </li>
+
+      <li>
+        Circular attachments are blocked.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Complements and adjuncts
+    </summary>
+
+    <ul>
+      <li>
+        Dropping a node onto an X′ level
+        opens a Complement or Adjunct
+        choice.
+      </li>
+
+      <li>
+        A complement becomes a direct
+        daughter of the existing X′ and
+        a sister of the head.
+      </li>
+
+      <li>
+        An adjunct creates a new X′ level
+        above the existing X′.
+      </li>
+
+      <li>
+        The adjunct and the lower X′
+        become sisters under the newly
+        created X′.
+      </li>
+
+      <li>
+        The side on which the adjunct is
+        dropped determines whether it
+        appears on the left or right.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Edit node labels and words
+    </summary>
+
+    <ul>
+      <li>
+        Double-click any node to edit its
+        label.
+      </li>
+
+      <li>
+        Double-click a blank lexical
+        terminal to enter a word.
+      </li>
+
+      <li>
+        The node expands automatically as
+        more text is entered.
+      </li>
+
+      <li>
+        Press Enter or Escape, or click
+        outside the node, to finish
+        editing.
+      </li>
+
+      <li>
+        The tree rebalances after an edit
+        changes a node’s width.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Connect nodes manually
+    </summary>
+
+    <ul>
+      <li>
+        Drag from the circle at the bottom
+        of a parent node.
+      </li>
+
+      <li>
+        Release on the circle at the top
+        of the intended daughter.
+      </li>
+
+      <li>
+        Manual connections are useful for
+        structures that are not created
+        through automatic attachment.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Navigate the canvas
+    </summary>
+
+    <ul>
+      <li>
+        Drag empty canvas space to pan
+        across the workspace.
+      </li>
+
+      <li>
+        Use the mouse wheel or the canvas
+        controls to zoom.
+      </li>
+
+      <li>
+        Use the fit-view control to bring
+        the complete tree back into view.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Delete and clear
+    </summary>
+
+    <ul>
+      <li>
+        Click a node or branch line to
+        select it.
+      </li>
+
+      <li>
+        Press Delete or Backspace, or use
+        Delete selected in the toolbar.
+      </li>
+
+      <li>
+        Clear canvas removes every node
+        and branch from the workspace.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Export the tree
+    </summary>
+
+    <ul>
+      <li>
+        Export PNG downloads a clean image
+        of the complete tree.
+      </li>
+
+      <li>
+        Selection outlines and connection
+        handles are hidden in the exported
+        PNG.
+      </li>
+
+      <li>
+        Export LaTeX downloads a complete
+        .tex document using the qtree
+        package and the \Tree command.
+      </li>
+
+      <li>
+        Sister order in the LaTeX output
+        follows the visual left-to-right
+        order of the tree.
+      </li>
+
+      <li>
+        Disconnected trees are exported as
+        separate \Tree commands.
+      </li>
+    </ul>
+  </details>
+</section>
       </aside>
 
       <main className="workspace">
