@@ -102,6 +102,13 @@ function isMaximalProjection(
 const DRAG_DATA_TYPE =
   "application/x-xbar-node";
 
+const FOCUS_LEXICAL_NODE_EVENT =
+  "xbar-focus-lexical-node";
+
+interface FocusLexicalNodeDetail {
+  nodeId: string;
+}
+
 const phraseLabels: PaletteItem[] = [
   { label: "CP", kind: "phrase" },
   { label: "TP", kind: "phrase" },
@@ -170,6 +177,85 @@ function createTreeSnapshot(
   };
 }
 
+function getAdjacentLexicalNodeId(
+  currentNodeId: string,
+  currentNodes: readonly SyntaxNode[],
+  direction: 1 | -1,
+): string | null {
+  const lexicalNodes =
+    currentNodes
+      .filter(
+        (node) =>
+          (
+            node.data.kind === "word" ||
+            node.data.kind ===
+              "wordInput"
+          ) &&
+          !node.data.isLowerCopy,
+      )
+      .sort(
+        (
+          firstNode,
+          secondNode,
+        ) => {
+          const firstCentreX =
+            firstNode.position.x +
+            getSyntaxNodeWidth(
+              firstNode,
+            ) /
+              2;
+
+          const secondCentreX =
+            secondNode.position.x +
+            getSyntaxNodeWidth(
+              secondNode,
+            ) /
+              2;
+
+          const horizontalDifference =
+            firstCentreX -
+            secondCentreX;
+
+          if (
+            Math.abs(
+              horizontalDifference,
+            ) > 1
+          ) {
+            return horizontalDifference;
+          }
+
+          return (
+            firstNode.position.y -
+            secondNode.position.y
+          );
+        },
+      );
+
+  if (lexicalNodes.length === 0) {
+    return null;
+  }
+
+  const currentIndex =
+    lexicalNodes.findIndex(
+      (node) =>
+        node.id === currentNodeId,
+    );
+
+  if (currentIndex === -1) {
+    return lexicalNodes[0].id;
+  }
+
+  const nextIndex =
+    (
+      currentIndex +
+      direction +
+      lexicalNodes.length
+    ) %
+    lexicalNodes.length;
+
+  return lexicalNodes[nextIndex].id;
+}
+
 function SyntaxNodeComponent({
   id,
   data,
@@ -206,6 +292,55 @@ function SyntaxNodeComponent({
         9 +
         30,
     );
+
+  useEffect(() => {
+    function handleLexicalFocus(
+      event: Event,
+    ) {
+      const focusEvent =
+        event as CustomEvent<
+          FocusLexicalNodeDetail
+        >;
+
+      if (
+        focusEvent.detail?.nodeId !==
+        id
+      ) {
+        return;
+      }
+
+      const isEditableLexicalNode =
+        (
+          data.kind === "word" ||
+          data.kind === "wordInput"
+        ) &&
+        !data.isLowerCopy;
+
+      if (!isEditableLexicalNode) {
+        return;
+      }
+
+      saveUndoSnapshot?.();
+      setIsEditing(true);
+    }
+
+    window.addEventListener(
+      FOCUS_LEXICAL_NODE_EVENT,
+      handleLexicalFocus,
+    );
+
+    return () => {
+      window.removeEventListener(
+        FOCUS_LEXICAL_NODE_EVENT,
+        handleLexicalFocus,
+      );
+    };
+  }, [
+    data.isLowerCopy,
+    data.kind,
+    id,
+    saveUndoSnapshot,
+  ]);
 
   useEffect(() => {
     const animationFrame =
@@ -384,6 +519,52 @@ function SyntaxNodeComponent({
             onBlur={finishEditing}
             onKeyDown={(event) => {
               event.stopPropagation();
+
+              const isLexicalInput =
+                data.kind === "word" ||
+                data.kind ===
+                  "wordInput";
+
+              if (
+                event.key === "Tab" &&
+                isLexicalInput &&
+                !data.isLowerCopy
+              ) {
+                event.preventDefault();
+
+                const nextNodeId =
+                  getAdjacentLexicalNodeId(
+                    id,
+                    reactFlow.getNodes(),
+                    event.shiftKey
+                      ? -1
+                      : 1,
+                  );
+
+                if (!nextNodeId) {
+                  return;
+                }
+
+                event.currentTarget.blur();
+
+                window.setTimeout(() => {
+                  window.dispatchEvent(
+                    new CustomEvent<
+                      FocusLexicalNodeDetail
+                    >(
+                      FOCUS_LEXICAL_NODE_EVENT,
+                      {
+                        detail: {
+                          nodeId:
+                            nextNodeId,
+                        },
+                      },
+                    ),
+                  );
+                }, 0);
+
+                return;
+              }
 
               if (
                 event.key === "Enter" ||
@@ -1569,24 +1750,16 @@ function escapeLatexText(
     .join("");
 }
 
-function formatQtreeLabel(
+function formatLatexNodeLabel(
   label: string,
 ): string {
   const trimmedLabel =
     label.trim();
 
-  /*
-   * Preserve blank lexical nodes without
-   * placing instructional text in them.
-   */
   if (!trimmedLabel) {
-    return "{\\phantom{x}}";
+    return "\\phantom{x}";
   }
 
-  /*
-   * Convert either N′ or N' into a
-   * typographically raised prime in LaTeX.
-   */
   const primeMatch =
     trimmedLabel.match(
       /^(.*?)[′']$/u,
@@ -1596,17 +1769,38 @@ function formatQtreeLabel(
     primeMatch &&
     primeMatch[1]
   ) {
-    const baseLabel =
-      escapeLatexText(
-        primeMatch[1],
-      );
-
-    return `{${baseLabel}$'$}`;
+    return `${escapeLatexText(
+      primeMatch[1],
+    )}$'$`;
   }
 
-  return `{${escapeLatexText(
+  return escapeLatexText(
     trimmedLabel,
-  )}}`;
+  );
+}
+
+function getLatexNodeName(
+  nodeId: string,
+): string {
+  return `n${nodeId.replace(
+    /[^A-Za-z0-9]/g,
+    "",
+  )}`;
+}
+
+function formatLatexNumber(
+  value: number,
+): string {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+
+  return value
+    .toFixed(3)
+    .replace(
+      /\.?0+$/,
+      "",
+    );
 }
 
 function createLatexDocument(
@@ -1623,12 +1817,6 @@ function createLatexDocument(
     );
   }
 
-  const structuralEdges =
-    currentEdges.filter(
-      (edge) =>
-        !isMovementEdge(edge),
-    );
-
   const nodeById = new Map(
     currentNodes.map((node) => [
       node.id,
@@ -1636,240 +1824,500 @@ function createLatexDocument(
     ]),
   );
 
-  const incomingEdgeCount =
-    new Map<string, number>();
-
-  for (const node of currentNodes) {
-    incomingEdgeCount.set(
-      node.id,
-      0,
+  const structuralEdges =
+    currentEdges.filter(
+      (edge) =>
+        !isMovementEdge(edge),
     );
-  }
 
-  for (const edge of structuralEdges) {
-    if (
-      !nodeById.has(edge.source) ||
-      !nodeById.has(edge.target)
-    ) {
-      continue;
-    }
-
-    incomingEdgeCount.set(
-      edge.target,
-      (
-        incomingEdgeCount.get(
-          edge.target,
-        ) ?? 0
-      ) + 1,
+  const movementEdges =
+    currentEdges.filter(
+      (edge) =>
+        isMovementEdge(edge) &&
+        nodeById.has(edge.source) &&
+        nodeById.has(edge.target),
     );
-  }
 
-  const multipleParentNode =
-    currentNodes.find(
+  const normalNodes =
+    currentNodes.filter(
       (node) =>
-        (
-          incomingEdgeCount.get(
-            node.id,
-          ) ?? 0
-        ) > 1,
+        node.data.kind !==
+        "movementSummary",
     );
 
-  if (multipleParentNode) {
-    throw new Error(
-      `${multipleParentNode.data.label || "A node"} has more than one parent. Remove the extra branch before exporting.`,
-    );
-  }
+  const positionReferenceNodes =
+    normalNodes.length > 0
+      ? normalNodes
+      : currentNodes;
 
-  const roots =
-    currentNodes
-      .filter(
-        (node) =>
-          (
-            incomingEdgeCount.get(
-              node.id,
-            ) ?? 0
-          ) === 0,
-      )
-      .sort(
-        (
-          firstNode,
-          secondNode,
-        ) =>
-          firstNode.position.x -
-          secondNode.position.x,
-      );
+  const coordinateScale = 0.025;
 
-  if (roots.length === 0) {
-    throw new Error(
-      "The tree has no root. Check for a circular branch.",
+  function getNodeWidth(
+    node: SyntaxNode,
+  ): number {
+    return (
+      node.measured?.width ??
+      getSyntaxNodeWidth(node)
     );
   }
 
-  const visitedNodeIds =
-    new Set<string>();
-
-  const activeNodeIds =
-    new Set<string>();
-
-  function getOrderedChildEdges(
-    parentId: string,
-  ): Edge[] {
-    return structuralEdges
-      .filter(
-        (edge) =>
-          edge.source ===
-            parentId &&
-          nodeById.has(edge.target),
-      )
-      .sort(
-        (
-          firstEdge,
-          secondEdge,
-        ) => {
-          const orderDifference =
-            getSiblingOrder(
-              firstEdge,
-            ) -
-            getSiblingOrder(
-              secondEdge,
-            );
-
-          if (
-            orderDifference !== 0
-          ) {
-            return orderDifference;
-          }
-
-          const firstChild =
-            nodeById.get(
-              firstEdge.target,
-            );
-
-          const secondChild =
-            nodeById.get(
-              secondEdge.target,
-            );
-
-          return (
-            (
-              firstChild?.position.x ??
-              0
-            ) -
-            (
-              secondChild?.position.x ??
-              0
-            )
-          );
-        },
-      );
+  function getNodeHeight(
+    node: SyntaxNode,
+  ): number {
+    return node.measured?.height ?? 40;
   }
 
-  function buildQtreeNode(
+  function getNodeCentreX(
+    node: SyntaxNode,
+  ): number {
+    return (
+      node.position.x +
+      getNodeWidth(node) / 2
+    );
+  }
+
+  function getNodeCentreY(
+    node: SyntaxNode,
+  ): number {
+    return (
+      node.position.y +
+      getNodeHeight(node) / 2
+    );
+  }
+
+  const minimumCentreX =
+    Math.min(
+      ...positionReferenceNodes.map(
+        getNodeCentreX,
+      ),
+    );
+
+  const minimumCentreY =
+    Math.min(
+      ...positionReferenceNodes.map(
+        getNodeCentreY,
+      ),
+    );
+
+  function getLatexX(
+    node: SyntaxNode,
+  ): number {
+    return (
+      getNodeCentreX(node) -
+      minimumCentreX
+    ) * coordinateScale;
+  }
+
+  function getLatexY(
+    node: SyntaxNode,
+  ): number {
+    return -(
+      getNodeCentreY(node) -
+      minimumCentreY
+    ) * coordinateScale;
+  }
+
+  function getSummaryParentEdge(
+    summaryNodeId: string,
+  ): Edge | undefined {
+    return structuralEdges.find(
+      (edge) =>
+        edge.target ===
+          summaryNodeId &&
+        nodeById.has(edge.source),
+    );
+  }
+
+  function getExportXByNodeId(
     nodeId: string,
-  ): string {
-    if (
-      activeNodeIds.has(nodeId)
-    ) {
-      throw new Error(
-        "The tree contains a circular branch.",
-      );
-    }
-
-    if (
-      visitedNodeIds.has(nodeId)
-    ) {
-      throw new Error(
-        "A node occurs more than once in the tree.",
-      );
-    }
-
+  ): number {
     const node =
       nodeById.get(nodeId);
 
     if (!node) {
-      return "";
+      return 0;
     }
-
-    activeNodeIds.add(nodeId);
-    visitedNodeIds.add(nodeId);
 
     if (
       node.data.kind ===
       "movementSummary"
     ) {
-      activeNodeIds.delete(
-        nodeId,
-      );
+      const parentEdge =
+        getSummaryParentEdge(
+          node.id,
+        );
 
-      return `\\qroof{${escapeLatexText(
-        node.data.label,
-      )}}`;
+      const parentNode =
+        parentEdge
+          ? nodeById.get(
+              parentEdge.source,
+            )
+          : undefined;
+
+      if (parentNode) {
+        return getLatexX(
+          parentNode,
+        );
+      }
     }
 
-    const formattedLabel =
-      formatQtreeLabel(
+    return getLatexX(node);
+  }
+
+  const nodeCommands: string[] =
+    [];
+
+  for (const node of normalNodes) {
+    const nodeName =
+      getLatexNodeName(
+        node.id,
+      );
+
+    const label =
+      formatLatexNodeLabel(
         node.data.label,
       );
 
-    const childEdges =
-      getOrderedChildEdges(
-        nodeId,
-      );
+    let nodeStyle =
+      "syntax phrase";
 
     if (
-      childEdges.length === 0
+      node.data.kind === "head"
     ) {
-      activeNodeIds.delete(
-        nodeId,
-      );
-
-      return formattedLabel;
+      nodeStyle = "syntax head";
+    } else if (
+      node.data.kind === "word" ||
+      node.data.kind === "wordInput"
+    ) {
+      nodeStyle = "syntax word";
     }
 
-    const children =
-      childEdges
-        .map((edge) =>
-          buildQtreeNode(
+    if (node.data.isLowerCopy) {
+      nodeStyle +=
+        ", syntax lower copy";
+    }
+
+    nodeCommands.push(
+      [
+        `\\node[${nodeStyle}]`,
+        `(${nodeName})`,
+        `at (${formatLatexNumber(
+          getLatexX(node),
+        )},${formatLatexNumber(
+          getLatexY(node),
+        )})`,
+        `{${label}};`,
+      ].join(" "),
+    );
+  }
+
+  const summaryCommands:
+    string[] = [];
+
+  for (const node of currentNodes) {
+    if (
+      node.data.kind !==
+      "movementSummary"
+    ) {
+      continue;
+    }
+
+    const nodeName =
+      getLatexNodeName(
+        node.id,
+      );
+
+    const parentEdge =
+      getSummaryParentEdge(
+        node.id,
+      );
+
+    const parentNode =
+      parentEdge
+        ? nodeById.get(
+            parentEdge.source,
+          )
+        : undefined;
+
+    const escapedWords =
+      node.data.label.trim()
+        ? escapeLatexText(
+            node.data.label.trim(),
+          )
+        : "\\phantom{x}";
+
+    const triangleHalfWidth =
+      Math.max(
+        0.65,
+        Math.min(
+          1.75,
+          0.55 +
+            Array.from(
+              node.data.label,
+            ).length *
+              0.035,
+        ),
+      );
+
+    const triangleHeight = 0.72;
+
+    if (parentNode) {
+      const parentName =
+        getLatexNodeName(
+          parentNode.id,
+        );
+
+      summaryCommands.push(
+        `\\coordinate (${nodeName}apex) at (${parentName}.south);`,
+      );
+    } else {
+      summaryCommands.push(
+        `\\coordinate (${nodeName}apex) at (${formatLatexNumber(
+          getLatexX(node),
+        )},${formatLatexNumber(
+          getLatexY(node),
+        )});`,
+      );
+    }
+
+    summaryCommands.push(
+      [
+        `\\coordinate (${nodeName}left)`,
+        `at ($(${nodeName}apex)`,
+        `+(-${formatLatexNumber(
+          triangleHalfWidth,
+        )},-${formatLatexNumber(
+          triangleHeight,
+        )})$);`,
+      ].join(" "),
+    );
+
+    summaryCommands.push(
+      [
+        `\\coordinate (${nodeName}right)`,
+        `at ($(${nodeName}apex)`,
+        `+(${formatLatexNumber(
+          triangleHalfWidth,
+        )},-${formatLatexNumber(
+          triangleHeight,
+        )})$);`,
+      ].join(" "),
+    );
+
+    summaryCommands.push(
+      [
+        "\\draw[summary triangle]",
+        `(${nodeName}apex)`,
+        `-- (${nodeName}left)`,
+        `-- (${nodeName}right)`,
+        "-- cycle;",
+      ].join(" "),
+    );
+
+    summaryCommands.push(
+      [
+        "\\node[syntax word, anchor=north]",
+        `(${nodeName})`,
+        `at ($(${nodeName}apex)`,
+        `+(0,-${formatLatexNumber(
+          triangleHeight,
+        )})$)`,
+        `{\\sout{${escapedWords}}};`,
+      ].join(" "),
+    );
+  }
+
+  const structuralEdgeCommands =
+    structuralEdges
+      .filter(
+        (edge) => {
+          if (edge.hidden) {
+            return false;
+          }
+
+          const sourceNode =
+            nodeById.get(
+              edge.source,
+            );
+
+          const targetNode =
+            nodeById.get(
+              edge.target,
+            );
+
+          if (
+            !sourceNode ||
+            !targetNode
+          ) {
+            return false;
+          }
+
+          return (
+            sourceNode.data.kind !==
+              "movementSummary" &&
+            targetNode.data.kind !==
+              "movementSummary"
+          );
+        },
+      )
+      .map((edge) => {
+        const sourceName =
+          getLatexNodeName(
+            edge.source,
+          );
+
+        const targetName =
+          getLatexNodeName(
             edge.target,
-          ),
-        )
-        .join(" ");
+          );
 
-    activeNodeIds.delete(nodeId);
+        return [
+          "\\draw[tree edge]",
+          `(${sourceName}.south)`,
+          "--",
+          `(${targetName}.north);`,
+        ].join(" ");
+      });
 
-    return `[.${formattedLabel} ${children} ]`;
-  }
-
-  const treeCommands =
-    roots.map(
-      (root) =>
-        `\\Tree ${buildQtreeNode(
-          root.id,
-        )}`,
+  const lowestNormalNodeY =
+    Math.min(
+      ...positionReferenceNodes.map(
+        (node) =>
+          getLatexY(node) -
+          (
+            getNodeHeight(node) *
+            coordinateScale
+          ) /
+            2,
+      ),
     );
 
-  if (
-    visitedNodeIds.size !==
-    currentNodes.length
-  ) {
-    throw new Error(
-      "Some nodes could not be reached from a root. Check the tree branches.",
-    );
-  }
+  /*
+   * The movement curve is routed below
+   * every node and every condensed-copy
+   * triangle.
+   */
+  const movementRouteY =
+    lowestNormalNodeY - 2.4;
+
+  const movementEdgeCommands =
+    movementEdges.map((edge) => {
+      const sourceName =
+        getLatexNodeName(
+          edge.source,
+        );
+
+      const targetName =
+        getLatexNodeName(
+          edge.target,
+        );
+
+      const sourceX =
+        getExportXByNodeId(
+          edge.source,
+        );
+
+      const targetX =
+        getExportXByNodeId(
+          edge.target,
+        );
+
+      return [
+        "\\draw[movement edge]",
+        `(${sourceName}.south)`,
+        ".. controls",
+        `(${formatLatexNumber(
+          sourceX,
+        )},${formatLatexNumber(
+          movementRouteY,
+        )})`,
+        "and",
+        `(${formatLatexNumber(
+          targetX,
+        )},${formatLatexNumber(
+          movementRouteY,
+        )})`,
+        "..",
+        `(${targetName}.south);`,
+      ].join(" ");
+    });
 
   return [
-    "\\documentclass{article}",
-    "\\usepackage[margin=1in]{geometry}",
-    "\\usepackage{qtree}",
+    "\\documentclass[tikz,border=8pt]{standalone}",
+    "\\usepackage[T1]{fontenc}",
+    "\\usepackage[utf8]{inputenc}",
+    "\\usepackage[normalem]{ulem}",
+    "\\usepackage{xcolor}",
+    "\\usetikzlibrary{arrows.meta,backgrounds,calc}",
+    "",
+    "\\definecolor{xbarblue}{HTML}{4D7FC4}",
+    "\\definecolor{xbarpurple}{HTML}{7A55B6}",
+    "\\definecolor{xbaryellow}{HTML}{B18A22}",
+    "\\definecolor{xbarmovement}{HTML}{9B2F43}",
+    "",
+    "\\tikzset{",
+    "  syntax phrase/.style={",
+    "    draw=xbarblue,",
+    "    fill=xbarblue!7,",
+    "    rounded corners=2pt,",
+    "    line width=0.8pt,",
+    "    inner xsep=5pt,",
+    "    inner ysep=3pt,",
+    "    font=\\sffamily\\bfseries",
+    "  },",
+    "  syntax head/.style={",
+    "    draw=xbarpurple,",
+    "    fill=xbarpurple!7,",
+    "    rounded corners=2pt,",
+    "    line width=0.8pt,",
+    "    inner xsep=5pt,",
+    "    inner ysep=3pt,",
+    "    font=\\sffamily\\bfseries",
+    "  },",
+    "  syntax word/.style={",
+    "    draw=xbaryellow,",
+    "    fill=xbaryellow!7,",
+    "    rounded corners=2pt,",
+    "    line width=0.8pt,",
+    "    inner xsep=5pt,",
+    "    inner ysep=3pt,",
+    "    font=\\rmfamily",
+    "  },",
+    "  syntax lower copy/.style={",
+    "    dashed,",
+    "    opacity=0.82",
+    "  },",
+    "  tree edge/.style={",
+    "    draw=black!75,",
+    "    line width=0.8pt",
+    "  },",
+    "  summary triangle/.style={",
+    "    draw=black!85,",
+    "    fill=white,",
+    "    line width=0.9pt",
+    "  },",
+    "  movement edge/.style={",
+    "    draw=xbarmovement,",
+    "    dashed,",
+    "    line width=1pt,",
+    "    -{Latex[length=2.3mm,width=1.8mm]}",
+    "  }",
+    "}",
+    "",
     "\\pagestyle{empty}",
     "",
     "\\begin{document}",
-    "\\centering",
+    "\\begin{tikzpicture}[x=1cm,y=1cm]",
     "",
-    treeCommands.join(
-      "\n\n\\par\\bigskip\n\n",
-    ),
+    ...nodeCommands,
+    ...summaryCommands,
     "",
+    "\\begin{scope}[on background layer]",
+    ...structuralEdgeCommands,
+    ...movementEdgeCommands,
+    "\\end{scope}",
+    "",
+    "\\end{tikzpicture}",
     "\\end{document}",
     "",
   ].join("\n");
@@ -4160,72 +4608,34 @@ function exportTreeAsLatex() {
   </details>
 
   <details>
-  <summary>
-    Movement and reattachment
-  </summary>
+    <summary>
+      Move and reattach existing nodes
+    </summary>
 
-  <ul>
-    <li>
-      Drag an attached phrase onto a
-      different node higher in the tree
-      to create syntactic movement.
-    </li>
+    <ul>
+      <li>
+        Drag an existing node or subtree
+        onto another node to attach it as
+        a daughter.
+      </li>
 
-    <li>
-      The moved phrase is copied into the
-      higher position with its complete
-      internal structure preserved.
-    </li>
+      <li>
+        Dropping on the left or right
+        side determines its position
+        among the other daughters.
+      </li>
 
-    <li>
-      The original lower position remains
-      in the tree as a condensed copy.
-    </li>
+      <li>
+        A node can have only one parent.
+        Reattaching it removes its earlier
+        parent connection.
+      </li>
 
-    <li>
-      The condensed lower copy shows the
-      moved phrase label, a triangle, and
-      the complete sequence of words that
-      belonged to that phrase.
-    </li>
-
-    <li>
-      The words beneath the triangle are
-      struck through to identify them as
-      the unpronounced lower copy.
-    </li>
-
-    <li>
-      A curved dashed arrow runs beneath
-      the tree from the lower copy to the
-      lexical terminal of the higher copy.
-    </li>
-
-    <li>
-      The lower copy cannot be dragged or
-      edited after movement has occurred.
-    </li>
-
-    <li>
-      Dragging an unattached phrase onto
-      another node attaches it normally
-      without creating a lower copy or
-      movement arrow.
-    </li>
-
-    <li>
-      Dragging an attached node to a
-      position that is not higher in the
-      tree performs ordinary
-      reattachment rather than movement.
-    </li>
-
-    <li>
-      Use Undo or press Ctrl+Z to reverse
-      the most recent movement operation.
-    </li>
-  </ul>
-</details>
+      <li>
+        Circular attachments are blocked.
+      </li>
+    </ul>
+  </details>
 
   <details>
     <summary>
@@ -4278,6 +4688,18 @@ function exportTreeAsLatex() {
       <li>
         Double-click a blank lexical
         terminal to enter a word.
+      </li>
+
+      <li>
+        While editing a lexical box,
+        press Tab to open the next lexical
+        box from left to right and begin
+        typing immediately.
+      </li>
+
+      <li>
+        Press Shift+Tab to move to the
+        previous lexical box.
       </li>
 
       <li>
@@ -4387,8 +4809,10 @@ function exportTreeAsLatex() {
 
       <li>
         Export LaTeX downloads a complete
-        .tex document using the qtree
-        package and the \Tree command.
+        standalone TikZ document that
+        preserves node positions, lower
+        copies, triangles, strikeout, and
+        movement arrows.
       </li>
 
       <li>
