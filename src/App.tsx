@@ -112,7 +112,13 @@ type MaximalProjection =
   | "PP"
   | "AdjP"
   | "AdvP"
-  | "AuxP";
+  | "AuxP"
+  | "PerfP"
+  | "ProgP"
+  | "VoiceP"
+  | "TopP"
+  | "FocP"
+  | "ClassP";
 
 const projectionChains: Record<
   MaximalProjection,
@@ -130,6 +136,12 @@ const projectionChains: Record<
   AdjP: ["AdjP", "Adj′", "Adj"],
   AdvP: ["AdvP", "Adv′", "Adv"],
   AuxP: ["AuxP", "Aux′", "Aux"],
+  PerfP: ["PerfP", "Perf'", "Perf"],
+  ProgP: ["ProgP", "Prog'", "Prog"],
+  VoiceP: ["VoiceP", "Voice'", "Voice"],
+  TopP: ["TopP", "Top'", "Top"],
+  FocP: ["FocP", "Foc'", "Foc"],
+  ClassP: ["ClassP", "Class'", "Class"],
 };
 
 function isMaximalProjection(
@@ -165,12 +177,19 @@ interface FocusLexicalNodeDetail {
 const phraseLabels: PaletteItem[] = [
   { label: "CP", kind: "phrase" },
   { label: "TP", kind: "phrase" },
+  { label: "DP", kind: "phrase" },
   { label: "NP", kind: "phrase" },
   { label: "VP", kind: "phrase" },
   { label: "PP", kind: "phrase" },
   { label: "AdjP", kind: "phrase" },
   { label: "AdvP", kind: "phrase" },
   { label: "AuxP", kind: "phrase" },
+  { label: "PerfP", kind: "phrase" },
+  { label: "ProgP", kind: "phrase" },
+  { label: "VoiceP", kind: "phrase" },
+  { label: "TopP", kind: "phrase" },
+  { label: "FocP", kind: "phrase" },
+  { label: "ClassP", kind: "phrase" },
 ];
 
 const headLabels: PaletteItem[] = [
@@ -184,6 +203,12 @@ const headLabels: PaletteItem[] = [
   { label: "T", kind: "head" },
   { label: "C", kind: "head" },
   { label: "Qual", kind: "head" },
+  { label: "Perf", kind: "head" },
+  { label: "Prog", kind: "head" },
+  { label: "Voice", kind: "head" },
+  { label: "Class", kind: "head" },
+  { label: "Top", kind: "head" },
+  { label: "Focus", kind: "head" },
 ];
 
 interface TreeSnapshot {
@@ -200,7 +225,9 @@ interface DisplayOptionsContextValue {
   showNodeBoxes: boolean;
   showMovementArrows: boolean;
   showHeadWordLines: boolean;
+  collapseUnusedBarLevels: boolean;
   treeLayoutMode: TreeLayoutMode;
+  requestAutoBalance: () => void;
 }
 
 const DisplayOptionsContext =
@@ -208,7 +235,9 @@ const DisplayOptionsContext =
     showNodeBoxes: true,
     showMovementArrows: true,
     showHeadWordLines: true,
+    collapseUnusedBarLevels: false,
     treeLayoutMode: "topDown",
+    requestAutoBalance: () => {},
   });
 
 function createTreeSnapshot(
@@ -544,7 +573,9 @@ function SyntaxNodeComponent({
   const {
     showNodeBoxes,
     showHeadWordLines,
+    collapseUnusedBarLevels,
     treeLayoutMode,
+    requestAutoBalance,
   } = useContext(
     DisplayOptionsContext,
   );
@@ -689,25 +720,7 @@ function SyntaxNodeComponent({
       updateNodeInternals(id);
 
       requestAnimationFrame(() => {
-        const currentNodes =
-          reactFlow.getNodes();
-
-        const currentEdges =
-          reactFlow.getEdges();
-
-        const balancedNodes =
-          layoutTreeComponent(
-            currentNodes,
-            currentEdges,
-            id,
-            showNodeBoxes,
-            showHeadWordLines,
-            treeLayoutMode,
-          );
-
-        reactFlow.setNodes(
-          balancedNodes,
-        );
+        requestAutoBalance();
       });
     });
   }
@@ -1714,6 +1727,228 @@ function getSyntaxNodeWidth(
   );
 }
 
+interface CollapsedBarStructure {
+  nodes: SyntaxNode[];
+  edges: Edge[];
+  collapsedNodeIds: Set<string>;
+}
+
+function createCollapsedBarStructure(
+  currentNodes: readonly SyntaxNode[],
+  currentEdges: readonly Edge[],
+  collapseUnusedBarLevels: boolean,
+): CollapsedBarStructure {
+  if (!collapseUnusedBarLevels) {
+    return {
+      nodes: [...currentNodes],
+      edges: [...currentEdges],
+      collapsedNodeIds:
+        new Set<string>(),
+    };
+  }
+
+  const nodeById =
+    new Map(
+      currentNodes.map(
+        (node) => [
+          node.id,
+          node,
+        ],
+      ),
+    );
+
+  const visibleNodeIds =
+    new Set(
+      currentNodes.map(
+        (node) => node.id,
+      ),
+    );
+
+  const collapsedNodeIds =
+    new Set<string>();
+
+  let effectiveEdges =
+    currentEdges.map(
+      (edge): Edge => ({
+        ...edge,
+        data: edge.data
+          ? {
+              ...edge.data,
+            }
+          : undefined,
+      }),
+    );
+
+  /*
+   * Contract one eligible unary bar at a
+   * time, then recalculate the graph. This
+   * also handles chains of unused bar levels.
+   */
+  let structureChanged = true;
+
+  while (structureChanged) {
+    structureChanged = false;
+
+    const structuralEdges =
+      effectiveEdges.filter(
+        (edge) =>
+          !isMovementEdge(edge) &&
+          visibleNodeIds.has(
+            edge.source,
+          ) &&
+          visibleNodeIds.has(
+            edge.target,
+          ),
+      );
+
+    const movementEndpointIds =
+      new Set<string>();
+
+    for (const edge of effectiveEdges) {
+      if (!isMovementEdge(edge)) {
+        continue;
+      }
+
+      movementEndpointIds.add(
+        edge.source,
+      );
+
+      movementEndpointIds.add(
+        edge.target,
+      );
+    }
+
+    for (const nodeId of [
+      ...visibleNodeIds,
+    ]) {
+      const node =
+        nodeById.get(nodeId);
+
+      if (
+        !node ||
+        node.data.kind !== "phrase" ||
+        !isBarLevelLabel(
+          node.data.label,
+        ) ||
+        node.data.isLowerCopy ||
+        movementEndpointIds.has(nodeId)
+      ) {
+        continue;
+      }
+
+      const incomingEdges =
+        structuralEdges.filter(
+          (edge) =>
+            edge.target === nodeId,
+        );
+
+      const outgoingEdges =
+        structuralEdges.filter(
+          (edge) =>
+            edge.source === nodeId,
+        );
+
+      /*
+       * A removable bar must have exactly
+       * one parent and exactly one daughter.
+       * Root bar levels are retained because
+       * there is no parent to receive the
+       * promoted daughter.
+       */
+      if (
+        incomingEdges.length !== 1 ||
+        outgoingEdges.length !== 1
+      ) {
+        continue;
+      }
+
+      const incomingEdge =
+        incomingEdges[0];
+
+      const outgoingEdge =
+        outgoingEdges[0];
+
+      if (
+        incomingEdge.source ===
+          outgoingEdge.target ||
+        incomingEdge.source === nodeId ||
+        outgoingEdge.target === nodeId
+      ) {
+        continue;
+      }
+
+      const bypassEdge: Edge = {
+        id:
+          `collapsed-${incomingEdge.id}-${outgoingEdge.id}`,
+        source:
+          incomingEdge.source,
+        target:
+          outgoingEdge.target,
+        type:
+          incomingEdge.type ??
+          outgoingEdge.type ??
+          "straight",
+        sourceHandle:
+          incomingEdge.sourceHandle,
+        targetHandle:
+          outgoingEdge.targetHandle,
+        hidden:
+          Boolean(incomingEdge.hidden) &&
+          Boolean(outgoingEdge.hidden),
+        data: {
+          ...incomingEdge.data,
+          edgeKind: "tree",
+          siblingOrder:
+            getSiblingOrder(
+              incomingEdge,
+            ),
+          collapsedBarNodeId:
+            nodeId,
+        },
+      };
+
+      effectiveEdges = [
+        ...effectiveEdges.filter(
+          (edge) =>
+            edge.id !==
+              incomingEdge.id &&
+            edge.id !==
+              outgoingEdge.id,
+        ),
+        bypassEdge,
+      ];
+
+      visibleNodeIds.delete(nodeId);
+
+      collapsedNodeIds.add(nodeId);
+
+      structureChanged = true;
+      break;
+    }
+  }
+
+  return {
+    nodes:
+      currentNodes.filter(
+        (node) =>
+          visibleNodeIds.has(
+            node.id,
+          ),
+      ),
+    edges:
+      effectiveEdges.filter(
+        (edge) =>
+          visibleNodeIds.has(
+            edge.source,
+          ) &&
+          visibleNodeIds.has(
+            edge.target,
+          ),
+      ),
+    collapsedNodeIds,
+  };
+}
+
 function getSiblingOrder(
   edge: Edge,
 ): number {
@@ -1822,6 +2057,7 @@ function layoutTreeComponent(
   showHeadWordLines = true,
   treeLayoutMode:
     TreeLayoutMode = "topDown",
+  collapseUnusedBarLevels = false,
 ): SyntaxNode[] {
   const activeSisterGap =
     showNodeBoxes
@@ -1833,24 +2069,62 @@ function layoutTreeComponent(
       ? LEVEL_GAP
       : BOXLESS_LEVEL_GAP;
 
+  const collapsedStructure =
+    createCollapsedBarStructure(
+      currentNodes,
+      currentEdges,
+      collapseUnusedBarLevels,
+    );
+
+  const layoutNodes =
+    collapsedStructure.nodes;
+
+  const layoutEdges =
+    collapsedStructure.edges;
+
   const structuralEdges =
-    currentEdges.filter(
+    layoutEdges.filter(
       (edge) =>
         !isMovementEdge(edge),
     );
 
   const nodeById = new Map(
-    currentNodes.map((node) => [
+    layoutNodes.map((node) => [
       node.id,
       node,
     ]),
   );
 
+  const effectiveStartingNodeId =
+    nodeById.has(startingNodeId)
+      ? startingNodeId
+      : (
+          layoutNodes.find(
+            (node) => {
+              const originalConnectedIds =
+                getConnectedNodeIds(
+                  startingNodeId,
+                  currentEdges.filter(
+                    (edge) =>
+                      !isMovementEdge(
+                        edge,
+                      ),
+                  ),
+                );
+
+              return originalConnectedIds
+                .has(node.id);
+            },
+          )?.id ??
+          layoutNodes[0]?.id ??
+          startingNodeId
+        );
+
   const connectedNodeIds =
-  getConnectedNodeIds(
-    startingNodeId,
-    structuralEdges,
-  );
+    getConnectedNodeIds(
+      effectiveStartingNodeId,
+      structuralEdges,
+    );
 
   const childEdgesByParent =
     new Map<string, Edge[]>();
@@ -2386,13 +2660,27 @@ function layoutAllTreeComponents(
   showNodeBoxes: boolean,
   showHeadWordLines: boolean,
   treeLayoutMode: TreeLayoutMode,
+  collapseUnusedBarLevels: boolean,
 ): SyntaxNode[] {
   if (currentNodes.length === 0) {
     return [];
   }
 
+  const collapsedStructure =
+    createCollapsedBarStructure(
+      currentNodes,
+      currentEdges,
+      collapseUnusedBarLevels,
+    );
+
+  const layoutNodes =
+    collapsedStructure.nodes;
+
+  const layoutEdges =
+    collapsedStructure.edges;
+
   const structuralEdges =
-    currentEdges.filter(
+    layoutEdges.filter(
       (edge) =>
         !isMovementEdge(edge),
     );
@@ -2405,7 +2693,7 @@ function layoutAllTreeComponents(
     );
 
   const rootNodes =
-    currentNodes
+    layoutNodes
       .filter(
         (node) =>
           !nodeIdsWithParents.has(
@@ -2434,23 +2722,41 @@ function layoutAllTreeComponents(
         },
       );
 
-  let balancedNodes = [
-    ...currentNodes,
+  let balancedVisibleNodes = [
+    ...layoutNodes,
   ];
 
   for (const rootNode of rootNodes) {
-    balancedNodes =
+    balancedVisibleNodes =
       layoutTreeComponent(
-        balancedNodes,
-        currentEdges,
+        balancedVisibleNodes,
+        layoutEdges,
         rootNode.id,
         showNodeBoxes,
         showHeadWordLines,
         treeLayoutMode,
+        false,
       );
   }
 
-  return balancedNodes;
+  const balancedNodeById =
+    new Map(
+      balancedVisibleNodes.map(
+        (node) => [
+          node.id,
+          node,
+        ],
+      ),
+    );
+
+  return currentNodes.map((node) => {
+    const balancedNode =
+      balancedNodeById.get(
+        node.id,
+      );
+
+    return balancedNode ?? node;
+  });
 }
 
 function nodePositionsChanged(
@@ -2502,6 +2808,36 @@ interface PendingBarAttachment {
     x: number;
     y: number;
   };
+}
+
+type BarAttachmentShortcut =
+  | "complement"
+  | "adjunct"
+  | null;
+
+function getBarAttachmentShortcut(
+  event: {
+    ctrlKey?: boolean;
+    metaKey?: boolean;
+    altKey?: boolean;
+  },
+): BarAttachmentShortcut {
+  /*
+   * Alt takes precedence when more than
+   * one modifier is held.
+   */
+  if (event.altKey) {
+    return "adjunct";
+  }
+
+  if (
+    event.ctrlKey ||
+    event.metaKey
+  ) {
+    return "complement";
+  }
+
+  return null;
 }
 
 function isBarLevelLabel(
@@ -3351,6 +3687,9 @@ const SHOW_HEAD_WORD_LINES_STORAGE_KEY =
 const TREE_LAYOUT_MODE_STORAGE_KEY =
   "xbar-tree-builder-layout-mode-v1";
 
+const COLLAPSE_UNUSED_BAR_LEVELS_STORAGE_KEY =
+  "xbar-tree-builder-collapse-unused-bars-v1";
+
 function loadShowNodeBoxes(): boolean {
   if (
     typeof window === "undefined"
@@ -3440,6 +3779,25 @@ function loadTreeLayoutMode():
       : "topDown";
   } catch {
     return "topDown";
+  }
+}
+
+function loadCollapseUnusedBarLevels():
+  boolean {
+  if (
+    typeof window === "undefined"
+  ) {
+    return false;
+  }
+
+  try {
+    return (
+      window.localStorage.getItem(
+        COLLAPSE_UNUSED_BAR_LEVELS_STORAGE_KEY,
+      ) === "true"
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -3720,6 +4078,13 @@ const [
   loadTreeLayoutMode,
 );
 
+const [
+  collapseUnusedBarLevels,
+  setCollapseUnusedBarLevels,
+] = useState<boolean>(
+  loadCollapseUnusedBarLevels,
+);
+
 useEffect(() => {
   try {
     window.localStorage.setItem(
@@ -3776,23 +4141,77 @@ useEffect(() => {
   }
 }, [treeLayoutMode]);
 
+useEffect(() => {
+  try {
+    window.localStorage.setItem(
+      COLLAPSE_UNUSED_BAR_LEVELS_STORAGE_KEY,
+      String(
+        collapseUnusedBarLevels,
+      ),
+    );
+  } catch (error) {
+    console.error(
+      "The unused-bar setting could not be saved.",
+      error,
+    );
+  }
+}, [collapseUnusedBarLevels]);
+
 const autoBalanceFrameRef =
   useRef<number | null>(null);
 
-const scheduleAutoBalance =
+const isNodeDragActiveRef =
+  useRef(false);
+
+const latestLayoutNodesRef =
+  useRef<readonly SyntaxNode[]>(
+    nodes,
+  );
+
+const latestLayoutEdgesRef =
+  useRef<readonly Edge[]>(
+    edges,
+  );
+
+/*
+ * These assignments intentionally happen
+ * during render. They keep the refs current
+ * without making scheduleAutoBalance depend
+ * on every drag-position update.
+ */
+latestLayoutNodesRef.current =
+  nodes;
+
+latestLayoutEdgesRef.current =
+  edges;
+
+const cancelScheduledAutoBalance =
   useCallback(() => {
-    if (!reactFlowInstance) {
+    if (
+      autoBalanceFrameRef.current ===
+      null
+    ) {
       return;
     }
 
+    cancelAnimationFrame(
+      autoBalanceFrameRef.current,
+    );
+
+    autoBalanceFrameRef.current =
+      null;
+  }, []);
+
+const scheduleAutoBalance =
+  useCallback(() => {
     if (
-      autoBalanceFrameRef.current !==
-      null
+      !reactFlowInstance ||
+      isNodeDragActiveRef.current
     ) {
-      cancelAnimationFrame(
-        autoBalanceFrameRef.current,
-      );
+      return;
     }
+
+    cancelScheduledAutoBalance();
 
     /*
      * Two animation frames allow React Flow
@@ -3801,28 +4220,92 @@ const scheduleAutoBalance =
      */
     autoBalanceFrameRef.current =
       requestAnimationFrame(() => {
+        if (
+          isNodeDragActiveRef.current
+        ) {
+          autoBalanceFrameRef.current =
+            null;
+
+          return;
+        }
+
         autoBalanceFrameRef.current =
           requestAnimationFrame(() => {
-            const currentNodes =
+            if (
+              isNodeDragActiveRef.current
+            ) {
+              autoBalanceFrameRef.current =
+                null;
+
+              return;
+            }
+
+            const storedNodes =
+              latestLayoutNodesRef.current;
+
+            const storedEdges =
+              latestLayoutEdgesRef.current;
+
+            const renderedNodes =
               reactFlowInstance
                 .getNodes();
 
-            const currentEdges =
-              reactFlowInstance
-                .getEdges();
+            const renderedNodeById =
+              new Map(
+                renderedNodes.map(
+                  (node) => [
+                    node.id,
+                    node,
+                  ],
+                ),
+              );
+
+            /*
+             * React Flow contains only visible
+             * nodes while unary bar levels are
+             * collapsed. Merge current visible
+             * measurements into the complete
+             * stored graph before balancing.
+             */
+            const currentNodes =
+              storedNodes.map((node) => {
+                const renderedNode =
+                  renderedNodeById.get(
+                    node.id,
+                  );
+
+                if (!renderedNode) {
+                  return node;
+                }
+
+                return {
+                  ...node,
+                  position: {
+                    ...renderedNode.position,
+                  },
+                  measured:
+                    renderedNode.measured
+                      ? {
+                          ...renderedNode
+                            .measured,
+                        }
+                      : node.measured,
+                };
+              });
 
             const balancedNodes =
               layoutAllTreeComponents(
                 currentNodes,
-                currentEdges,
+                storedEdges,
                 showNodeBoxes,
                 showHeadWordLines,
                 treeLayoutMode,
+                collapseUnusedBarLevels,
               );
 
             if (
               nodePositionsChanged(
-                currentNodes,
+                storedNodes,
                 balancedNodes,
               )
             ) {
@@ -3836,6 +4319,8 @@ const scheduleAutoBalance =
           });
       });
   }, [
+    cancelScheduledAutoBalance,
+    collapseUnusedBarLevels,
     reactFlowInstance,
     setNodes,
     showHeadWordLines,
@@ -3845,21 +4330,18 @@ const scheduleAutoBalance =
 
 useEffect(() => {
   return () => {
-    if (
-      autoBalanceFrameRef.current !==
-      null
-    ) {
-      cancelAnimationFrame(
-        autoBalanceFrameRef.current,
-      );
-    }
+    cancelScheduledAutoBalance();
   };
-}, []);
+}, [
+  cancelScheduledAutoBalance,
+]);
 
 /*
  * Rebalance after structural changes,
  * node creation/deletion, restored sessions,
- * and box-display changes.
+ * and display-setting changes. Position-only
+ * updates during a pointer drag do not trigger
+ * this effect.
  */
 const layoutStructureSignature = [
   nodes
@@ -3894,6 +4376,7 @@ useEffect(() => {
 }, [
   layoutStructureSignature,
   scheduleAutoBalance,
+  collapseUnusedBarLevels,
   showNodeBoxes,
   treeLayoutMode,
 ]);
@@ -3984,6 +4467,11 @@ const undoLastAction =
       return;
     }
 
+    isNodeDragActiveRef.current =
+      false;
+
+    cancelScheduledAutoBalance();
+
     setPendingBarAttachment(null);
 
     setNodes(
@@ -3998,6 +4486,7 @@ const undoLastAction =
       undoStackRef.current.length,
     );
   }, [
+    cancelScheduledAutoBalance,
     setEdges,
     setNodes,
   ]);
@@ -4055,12 +4544,23 @@ useEffect(() => {
 const handleNodeDragStart:
   OnNodeDrag<SyntaxNode> =
   useCallback(() => {
+    /*
+     * A pending automatic layout must not
+     * write an older balanced position while
+     * the pointer is actively moving a node.
+     */
+    isNodeDragActiveRef.current =
+      true;
+
+    cancelScheduledAutoBalance();
+
     dragStartSnapshotRef.current =
       createTreeSnapshot(
         nodes,
         edges,
       );
   }, [
+    cancelScheduledAutoBalance,
     edges,
     nodes,
   ]);
@@ -4188,6 +4688,7 @@ function attachDirectly(
       showNodeBoxes,
       showHeadWordLines,
       treeLayoutMode,
+      collapseUnusedBarLevels,
     );
 
   if (
@@ -4203,6 +4704,7 @@ function attachDirectly(
         showNodeBoxes,
         showHeadWordLines,
         treeLayoutMode,
+        collapseUnusedBarLevels,
       );
   }
 
@@ -4377,6 +4879,7 @@ function attachAsAdjunct(
       showNodeBoxes,
       showHeadWordLines,
       treeLayoutMode,
+      collapseUnusedBarLevels,
     );
 
   if (
@@ -4392,6 +4895,7 @@ function attachAsAdjunct(
         showNodeBoxes,
         showHeadWordLines,
         treeLayoutMode,
+        collapseUnusedBarLevels,
       );
   }
 
@@ -4599,6 +5103,7 @@ function attachHeadAsAdjunct(
       showNodeBoxes,
       showHeadWordLines,
       treeLayoutMode,
+      collapseUnusedBarLevels,
     );
 
   if (
@@ -4614,6 +5119,7 @@ function attachHeadAsAdjunct(
         showNodeBoxes,
         showHeadWordLines,
         treeLayoutMode,
+        collapseUnusedBarLevels,
       );
   }
 
@@ -5226,6 +5732,7 @@ function moveAttachedSubtree(
       showNodeBoxes,
       showHeadWordLines,
       treeLayoutMode,
+      collapseUnusedBarLevels,
     );
 
   setNodes(balancedNodes);
@@ -5235,7 +5742,14 @@ function moveAttachedSubtree(
 
 const handleNodeDragStop:
   OnNodeDrag<SyntaxNode> =
-  (_event, draggedNode) => {
+  (event, draggedNode) => {
+    /*
+     * Re-enable layout only after React Flow
+     * has delivered the final pointer position.
+     */
+    isNodeDragActiveRef.current =
+      false;
+
     if (!reactFlowInstance) {
       return;
     }
@@ -5452,6 +5966,33 @@ const handleNodeDragStop:
         parentNode.data.label,
       )
     ) {
+      const attachmentShortcut =
+        getBarAttachmentShortcut(
+          event,
+        );
+
+      if (
+        attachmentShortcut ===
+        "complement"
+      ) {
+        attachDirectly(
+          attachment,
+        );
+
+        return;
+      }
+
+      if (
+        attachmentShortcut ===
+        "adjunct"
+      ) {
+        attachAsAdjunct(
+          attachment,
+        );
+
+        return;
+      }
+
       setPendingBarAttachment(
         attachment,
       );
@@ -5650,10 +6191,185 @@ function attachCreatedHeadAsAdjunct(
       showNodeBoxes,
       showHeadWordLines,
       treeLayoutMode,
+      collapseUnusedBarLevels,
     );
 
   setNodes(balancedNodes);
   setEdges(updatedEdges);
+}
+
+  function attachCreatedSubtreeAsAdjunct(
+  lowerBarNode: SyntaxNode,
+  draggedRootId: string,
+  createdNodes: SyntaxNode[],
+  createdEdges: Edge[],
+  placeOnLeft: boolean,
+  draggedPosition: {
+    x: number;
+    y: number;
+  },
+) {
+  const draggedRootNode =
+    createdNodes.find(
+      (node) =>
+        node.id ===
+        draggedRootId,
+    );
+
+  if (
+    !draggedRootNode ||
+    !isBarLevelLabel(
+      lowerBarNode.data.label,
+    )
+  ) {
+    attachCreatedSubtreeDirectly(
+      lowerBarNode,
+      draggedRootId,
+      createdNodes,
+      createdEdges,
+      placeOnLeft,
+      draggedPosition,
+    );
+
+    return;
+  }
+
+  const incomingBarEdge =
+    edges.find(
+      (edge) =>
+        !isMovementEdge(edge) &&
+        edge.target ===
+          lowerBarNode.id,
+    );
+
+  const newUpperBarId =
+    `syntax-node-${nextNodeNumber.current}`;
+
+  nextNodeNumber.current += 1;
+
+  const newUpperBarNode:
+    SyntaxNode = {
+    id: newUpperBarId,
+    type: "syntaxNode",
+    position: {
+      ...lowerBarNode.position,
+    },
+    data: {
+      ...lowerBarNode.data,
+      kind: "phrase",
+      isLowerCopy: false,
+    },
+  };
+
+  const nodeSnapshot = [
+    ...nodes,
+    ...createdNodes,
+    newUpperBarNode,
+  ].map((node) => {
+    if (
+      node.id !== draggedRootId
+    ) {
+      return node;
+    }
+
+    return {
+      ...node,
+      position: {
+        ...draggedPosition,
+      },
+    };
+  });
+
+  let updatedEdges = [
+    ...edges,
+    ...createdEdges,
+  ].filter(
+    (edge) =>
+      !incomingBarEdge ||
+      edge.id !==
+        incomingBarEdge.id,
+  );
+
+  if (incomingBarEdge) {
+    updatedEdges = addEdge(
+      {
+        id:
+          `edge-${incomingBarEdge.source}-${newUpperBarId}`,
+        source:
+          incomingBarEdge.source,
+        target:
+          newUpperBarId,
+        type: "straight",
+        data: {
+          edgeKind: "tree",
+          siblingOrder:
+            getSiblingOrder(
+              incomingBarEdge,
+            ),
+        },
+      },
+      updatedEdges,
+    );
+  }
+
+  const leftDaughterId =
+    placeOnLeft
+      ? draggedRootId
+      : lowerBarNode.id;
+
+  const rightDaughterId =
+    placeOnLeft
+      ? lowerBarNode.id
+      : draggedRootId;
+
+  updatedEdges = addEdge(
+    {
+      id:
+        `edge-${newUpperBarId}-${leftDaughterId}`,
+      source:
+        newUpperBarId,
+      target:
+        leftDaughterId,
+      type: "straight",
+      data: {
+        edgeKind: "tree",
+        siblingOrder: 0,
+      },
+    },
+    updatedEdges,
+  );
+
+  updatedEdges = addEdge(
+    {
+      id:
+        `edge-${newUpperBarId}-${rightDaughterId}`,
+      source:
+        newUpperBarId,
+      target:
+        rightDaughterId,
+      type: "straight",
+      data: {
+        edgeKind: "tree",
+        siblingOrder: 1,
+      },
+    },
+    updatedEdges,
+  );
+
+  const balancedNodes =
+    layoutTreeComponent(
+      nodeSnapshot,
+      updatedEdges,
+      newUpperBarId,
+      showNodeBoxes,
+      showHeadWordLines,
+      treeLayoutMode,
+      collapseUnusedBarLevels,
+    );
+
+  setNodes(balancedNodes);
+  setEdges(updatedEdges);
+  setPendingBarAttachment(null);
 }
 
   function attachCreatedSubtreeDirectly(
@@ -5730,6 +6446,7 @@ function attachCreatedHeadAsAdjunct(
       showNodeBoxes,
       showHeadWordLines,
       treeLayoutMode,
+      collapseUnusedBarLevels,
     );
 
   setNodes(balancedNodes);
@@ -6025,6 +6742,7 @@ function attachCreatedHeadAsAdjunct(
           showNodeBoxes,
           showHeadWordLines,
           treeLayoutMode,
+          collapseUnusedBarLevels,
         );
 
       setNodes(balancedNodes);
@@ -6082,14 +6800,52 @@ function attachCreatedHeadAsAdjunct(
     }
 
     /*
-     * X′ targets require the existing
-     * complement/adjunct dialog.
+     * X′ targets use modifier-key shortcuts
+     * when Ctrl/Command or Alt is held.
+     * Without a modifier, retain the dialog.
      */
     if (
       isBarLevelLabel(
         targetNode.data.label,
       )
     ) {
+      const attachmentShortcut =
+        getBarAttachmentShortcut(
+          event,
+        );
+
+      if (
+        attachmentShortcut ===
+        "complement"
+      ) {
+        attachCreatedSubtreeDirectly(
+          targetNode,
+          draggedRootId,
+          createdNodes,
+          createdEdges,
+          placeOnLeft,
+          draggedPosition,
+        );
+
+        return;
+      }
+
+      if (
+        attachmentShortcut ===
+        "adjunct"
+      ) {
+        attachCreatedSubtreeAsAdjunct(
+          targetNode,
+          draggedRootId,
+          createdNodes,
+          createdEdges,
+          placeOnLeft,
+          draggedPosition,
+        );
+
+        return;
+      }
+
       setNodes((currentNodes) => [
         ...currentNodes,
         ...createdNodes,
@@ -6194,7 +6950,7 @@ function attachCreatedHeadAsAdjunct(
 }
 
   async function exportTreeAsPng() {
-  if (nodes.length === 0) {
+  if (displayedNodes.length === 0) {
     alert(
       "Add at least one node before exporting.",
     );
@@ -6238,7 +6994,9 @@ function attachCreatedHeadAsAdjunct(
       : 10;
 
   const nodesBounds =
-    getNodesBounds(nodes);
+    getNodesBounds(
+      displayedNodes,
+    );
 
   const imageWidth =
     Math.ceil(
@@ -6322,8 +7080,10 @@ function exportTreeAsLatex() {
   try {
     const latexDocument =
       createLatexDocument(
-        nodes,
-        edges,
+        collapsedDisplayStructure
+          .nodes,
+        collapsedDisplayStructure
+          .edges,
         showNodeBoxes,
         showMovementArrows,
         showHeadWordLines,
@@ -6436,6 +7196,63 @@ function exportTreeAsLatex() {
     });
   }
 
+  useEffect(() => {
+    function handleFormattingShortcut(
+      event: KeyboardEvent,
+    ) {
+      if (
+        event.repeat ||
+        event.altKey ||
+        !(
+          event.ctrlKey ||
+          event.metaKey
+        )
+      ) {
+        return;
+      }
+
+      const shortcutKey =
+        event.key.toLowerCase();
+
+      if (
+        shortcutKey !== "b" &&
+        shortcutKey !== "i"
+      ) {
+        return;
+      }
+
+      if (
+        selectedFormattableNodes.length ===
+        0
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+
+      toggleSelectedTextFormat(
+        shortcutKey === "b"
+          ? "textBold"
+          : "textItalic",
+      );
+    }
+
+    window.addEventListener(
+      "keydown",
+      handleFormattingShortcut,
+    );
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleFormattingShortcut,
+      );
+    };
+  }, [
+    selectedFormattableNodes,
+    toggleSelectedTextFormat,
+  ]);
+
   const formattingButtonBaseStyle:
     CSSProperties = {
     width: 34,
@@ -6454,27 +7271,47 @@ function exportTreeAsLatex() {
         : "not-allowed",
   };
 
+  const collapsedDisplayStructure =
+    useMemo(
+      () =>
+        createCollapsedBarStructure(
+          nodes,
+          edges,
+          collapseUnusedBarLevels,
+        ),
+      [
+        collapseUnusedBarLevels,
+        edges,
+        nodes,
+      ],
+    );
+
+  const displayedNodes =
+    collapsedDisplayStructure.nodes;
+
   const displayedEdges =
     useMemo(
       () =>
-        edges.map((edge) => ({
-          ...edge,
-          hidden:
-            Boolean(edge.hidden) ||
-            (
-              !showHeadWordLines &&
-              isHeadToLexicalEdge(
-                edge,
-                nodes,
-              )
-            ),
-        })),
+        collapsedDisplayStructure
+          .edges.map((edge) => ({
+            ...edge,
+            hidden:
+              Boolean(edge.hidden) ||
+              (
+                !showHeadWordLines &&
+                isHeadToLexicalEdge(
+                  edge,
+                  displayedNodes,
+                )
+              ),
+          })),
       [
-        edges,
-        nodes,
+        collapsedDisplayStructure,
+        displayedNodes,
         showHeadWordLines,
       ],
     );
+
 
   return (
     <div className="tree-builder">
@@ -6631,7 +7468,21 @@ function exportTreeAsLatex() {
       <li>
         Dropping a node onto an X′ level
         opens a Complement or Adjunct
-        choice.
+        choice when no modifier key is
+        held.
+      </li>
+
+      <li>
+        Hold Ctrl while releasing on an
+        X′ level to attach immediately as
+        a complement. Command works as the
+        equivalent shortcut on macOS.
+      </li>
+
+      <li>
+        Hold Alt while releasing on an
+        X′ level to attach immediately as
+        an adjunct.
       </li>
 
       <li>
@@ -6725,9 +7576,17 @@ function exportTreeAsLatex() {
 
       <li>
         Select one or more boxes and use
-        the B, I, and S toolbar buttons to
+        the B, I, and S controls at the
+        upper-left corner of the canvas to
         toggle bold, italics, and
         strikethrough.
+      </li>
+
+      <li>
+        Press Ctrl+B for bold or Ctrl+I
+        for italics. Command+B and
+        Command+I are also supported on
+        macOS.
       </li>
 
       <li>
@@ -6879,6 +7738,12 @@ function exportTreeAsLatex() {
 
     <ul>
       <li>
+        The display controls are located
+        at the upper-right corner of the
+        canvas.
+      </li>
+
+      <li>
         Keep Show boxes checked to display
         boxes around every phrase,
         category, and lexical word.
@@ -6964,6 +7829,57 @@ function exportTreeAsLatex() {
       <li>
         PNG and LaTeX exports use the
         currently selected setting.
+      </li>
+
+      <li>
+        The setting is remembered when
+        the page is reopened.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Remove unused bar levels
+    </summary>
+
+    <ul>
+      <li>
+        Check Remove unused bar levels to
+        hide any X′ node that has exactly
+        one structural daughter.
+      </li>
+
+      <li>
+        The X′ node must also have a
+        parent. Root bar levels are not
+        removed.
+      </li>
+
+      <li>
+        The single daughter is promoted
+        directly to the removed bar
+        level’s parent.
+      </li>
+
+      <li>
+        Bar levels with two or more
+        daughters remain visible because
+        they represent an active
+        complement or adjunct structure.
+      </li>
+
+      <li>
+        Uncheck the option to restore the
+        original bar levels and branches.
+        The underlying tree is not
+        permanently deleted.
+      </li>
+
+      <li>
+        Automatic balancing, PNG export,
+        and LaTeX export use the selected
+        setting.
       </li>
 
       <li>
@@ -7108,112 +8024,8 @@ function exportTreeAsLatex() {
               </select>
             </label>
 
-            <span
-              role="group"
-              aria-label="Text formatting"
-              title="Select one or more boxes, then apply text formatting"
-              style={{
-                display:
-                  "inline-flex",
-                alignItems:
-                  "center",
-                gap: 4,
-              }}
-            >
-              <button
-                type="button"
-                aria-label="Toggle bold"
-                aria-pressed={
-                  selectedNodesAreBold
-                }
-                disabled={
-                  selectedFormattableNodes
-                    .length === 0
-                }
-                onMouseDown={(event) =>
-                  event.preventDefault()
-                }
-                onClick={() =>
-                  toggleSelectedTextFormat(
-                    "textBold",
-                  )
-                }
-                style={{
-                  ...formattingButtonBaseStyle,
-                  background:
-                    selectedNodesAreBold
-                      ? "#e6edf8"
-                      : "#ffffff",
-                  fontWeight: 700,
-                }}
-              >
-                B
-              </button>
-
-              <button
-                type="button"
-                aria-label="Toggle italics"
-                aria-pressed={
-                  selectedNodesAreItalic
-                }
-                disabled={
-                  selectedFormattableNodes
-                    .length === 0
-                }
-                onMouseDown={(event) =>
-                  event.preventDefault()
-                }
-                onClick={() =>
-                  toggleSelectedTextFormat(
-                    "textItalic",
-                  )
-                }
-                style={{
-                  ...formattingButtonBaseStyle,
-                  background:
-                    selectedNodesAreItalic
-                      ? "#e6edf8"
-                      : "#ffffff",
-                  fontStyle: "italic",
-                }}
-              >
-                I
-              </button>
-
-              <button
-                type="button"
-                aria-label="Toggle strikethrough"
-                aria-pressed={
-                  selectedNodesAreStruck
-                }
-                disabled={
-                  selectedFormattableNodes
-                    .length === 0
-                }
-                onMouseDown={(event) =>
-                  event.preventDefault()
-                }
-                onClick={() =>
-                  toggleSelectedTextFormat(
-                    "textStrikethrough",
-                  )
-                }
-                style={{
-                  ...formattingButtonBaseStyle,
-                  background:
-                    selectedNodesAreStruck
-                      ? "#e6edf8"
-                      : "#ffffff",
-                  textDecoration:
-                    "line-through",
-                }}
-              >
-                S
-              </button>
-            </span>
-
             <label
-              title="Show or hide boxes around all phrase, category, and word labels"
+              title="Hide X-prime levels that have exactly one daughter and promote that daughter to the X-prime level's parent"
               style={{
                 display:
                   "inline-flex",
@@ -7237,107 +8049,19 @@ function exportTreeAsLatex() {
               <input
                 type="checkbox"
                 checked={
-                  showNodeBoxes
+                  collapseUnusedBarLevels
                 }
                 onChange={(event) =>
-                  setShowNodeBoxes(
+                  setCollapseUnusedBarLevels(
                     event.target
                       .checked,
                   )
                 }
               />
 
-              Show boxes
+              Remove unused bar levels
             </label>
 
-            <label
-              title="Show or hide all curved movement arrows"
-              style={{
-                display:
-                  "inline-flex",
-                alignItems:
-                  "center",
-                gap: 7,
-                padding:
-                  "7px 10px",
-                border:
-                  "1px solid #c7ccd4",
-                borderRadius: 6,
-                background:
-                  "#ffffff",
-                cursor:
-                  "pointer",
-                userSelect:
-                  "none",
-                fontSize: 14,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={
-                  showMovementArrows
-                }
-                onChange={(event) =>
-                  setShowMovementArrows(
-                    event.target
-                      .checked,
-                  )
-                }
-              />
-
-              Show movement arrows
-            </label>
-
-            <label
-              title="Show or hide the vertical line between a head and its lexical word"
-              style={{
-                display:
-                  "inline-flex",
-                alignItems:
-                  "center",
-                gap: 7,
-                padding:
-                  "7px 10px",
-                border:
-                  "1px solid #c7ccd4",
-                borderRadius: 6,
-                background:
-                  "#ffffff",
-                cursor:
-                  "pointer",
-                userSelect:
-                  "none",
-                fontSize: 14,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={
-                  showHeadWordLines
-                }
-                onChange={(event) =>
-                  setShowHeadWordLines(
-                    event.target
-                      .checked,
-                  )
-                }
-              />
-
-              Show head-word lines
-            </label>
-
-            <button
-  type="button"
-  className="undo-button"
-  onClick={undoLastAction}
-  disabled={undoCount === 0}
-  title="Undo the last action (Ctrl+Z)"
->
-  Undo
-  <span className="undo-shortcut">
-    Ctrl+Z
-  </span>
-</button>
             <button
   type="button"
   onClick={exportTreeAsPng}
@@ -7371,24 +8095,339 @@ function exportTreeAsLatex() {
         <div
   ref={flowCanvasRef}
   className="flow-canvas"
+  style={{
+    position: "relative",
+  }}
   onDragOver={
     handleCanvasDragOver
   }
   onDrop={handleCanvasDrop}
 >
+  <div
+    aria-label="Canvas editing controls"
+    onPointerDown={(event) =>
+      event.stopPropagation()
+    }
+    style={{
+      position: "absolute",
+      top: 12,
+      left: 12,
+      zIndex: 20,
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: 7,
+      border:
+        "1px solid #c7ccd4",
+      borderRadius: 8,
+      background:
+        "rgba(255,255,255,0.95)",
+      boxShadow:
+        "0 2px 8px rgba(0,0,0,0.09)",
+    }}
+  >
+    <button
+      type="button"
+      className="undo-button"
+      onClick={undoLastAction}
+      disabled={undoCount === 0}
+      title="Undo the last action (Ctrl+Z)"
+    >
+      Undo
+
+      <span className="undo-shortcut">
+        Ctrl+Z
+      </span>
+    </button>
+
+    <span
+      role="group"
+      aria-label="Text formatting"
+      title="Select one or more boxes, then apply text formatting"
+      style={{
+        display:
+          "inline-flex",
+        alignItems:
+          "center",
+        gap: 4,
+      }}
+    >
+      <button
+        type="button"
+        aria-label="Toggle bold"
+        aria-pressed={
+          selectedNodesAreBold
+        }
+        disabled={
+          selectedFormattableNodes
+            .length === 0
+        }
+        onMouseDown={(event) =>
+          event.preventDefault()
+        }
+        onClick={() =>
+          toggleSelectedTextFormat(
+            "textBold",
+          )
+        }
+        title="Bold (Ctrl+B)"
+        style={{
+          ...formattingButtonBaseStyle,
+          background:
+            selectedNodesAreBold
+              ? "#e6edf8"
+              : "#ffffff",
+          fontWeight: 700,
+        }}
+      >
+        B
+      </button>
+
+      <button
+        type="button"
+        aria-label="Toggle italics"
+        aria-pressed={
+          selectedNodesAreItalic
+        }
+        disabled={
+          selectedFormattableNodes
+            .length === 0
+        }
+        onMouseDown={(event) =>
+          event.preventDefault()
+        }
+        onClick={() =>
+          toggleSelectedTextFormat(
+            "textItalic",
+          )
+        }
+        title="Italics (Ctrl+I)"
+        style={{
+          ...formattingButtonBaseStyle,
+          background:
+            selectedNodesAreItalic
+              ? "#e6edf8"
+              : "#ffffff",
+          fontStyle: "italic",
+        }}
+      >
+        I
+      </button>
+
+      <button
+        type="button"
+        aria-label="Toggle strikethrough"
+        aria-pressed={
+          selectedNodesAreStruck
+        }
+        disabled={
+          selectedFormattableNodes
+            .length === 0
+        }
+        onMouseDown={(event) =>
+          event.preventDefault()
+        }
+        onClick={() =>
+          toggleSelectedTextFormat(
+            "textStrikethrough",
+          )
+        }
+        title="Strikethrough"
+        style={{
+          ...formattingButtonBaseStyle,
+          background:
+            selectedNodesAreStruck
+              ? "#e6edf8"
+              : "#ffffff",
+          textDecoration:
+            "line-through",
+        }}
+      >
+        S
+      </button>
+    </span>
+  </div>
+
+  <aside
+    aria-label="Bar-level attachment shortcuts"
+    onPointerDown={(event) =>
+      event.stopPropagation()
+    }
+    style={{
+      position: "absolute",
+      left: 56,
+      bottom: 12,
+      zIndex: 20,
+      display: "grid",
+      gap: 3,
+      padding: "7px 9px",
+      border:
+        "1px solid #c7ccd4",
+      borderRadius: 7,
+      background:
+        "rgba(255,255,255,0.95)",
+      boxShadow:
+        "0 2px 8px rgba(0,0,0,0.08)",
+      fontSize: 12,
+      lineHeight: 1.25,
+      userSelect: "none",
+      pointerEvents: "auto",
+    }}
+  >
+    <strong
+      style={{
+        fontSize: 12,
+      }}
+    >
+      Drop on X′
+    </strong>
+
+    <span>
+      Ctrl/Cmd + release:
+      Complement
+    </span>
+
+    <span>
+      Alt + release: Adjunct
+    </span>
+
+    <span
+      style={{
+        color: "#5f6670",
+      }}
+    >
+      No key: choose
+    </span>
+  </aside>
+
+  <div
+    aria-label="Canvas display controls"
+    onPointerDown={(event) =>
+      event.stopPropagation()
+    }
+    style={{
+      position: "absolute",
+      top: 12,
+      right: 12,
+      zIndex: 20,
+      display: "grid",
+      gap: 6,
+      minWidth: 190,
+      padding: 9,
+      border:
+        "1px solid #c7ccd4",
+      borderRadius: 8,
+      background:
+        "rgba(255,255,255,0.95)",
+      boxShadow:
+        "0 2px 8px rgba(0,0,0,0.09)",
+      fontSize: 14,
+    }}
+  >
+    <label
+      title="Show or hide boxes around all phrase, category, and word labels"
+      style={{
+        display:
+          "inline-flex",
+        alignItems:
+          "center",
+        gap: 7,
+        cursor:
+          "pointer",
+        userSelect:
+          "none",
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={
+          showNodeBoxes
+        }
+        onChange={(event) =>
+          setShowNodeBoxes(
+            event.target.checked,
+          )
+        }
+      />
+
+      Show boxes
+    </label>
+
+    <label
+      title="Show or hide all curved movement arrows"
+      style={{
+        display:
+          "inline-flex",
+        alignItems:
+          "center",
+        gap: 7,
+        cursor:
+          "pointer",
+        userSelect:
+          "none",
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={
+          showMovementArrows
+        }
+        onChange={(event) =>
+          setShowMovementArrows(
+            event.target.checked,
+          )
+        }
+      />
+
+      Show movement arrows
+    </label>
+
+    <label
+      title="Show or hide the vertical line between a head and its lexical word"
+      style={{
+        display:
+          "inline-flex",
+        alignItems:
+          "center",
+        gap: 7,
+        cursor:
+          "pointer",
+        userSelect:
+          "none",
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={
+          showHeadWordLines
+        }
+        onChange={(event) =>
+          setShowHeadWordLines(
+            event.target.checked,
+          )
+        }
+      />
+
+      Show head-word lines
+    </label>
+  </div>
+
           <DisplayOptionsContext.Provider
   value={{
     showNodeBoxes,
     showMovementArrows,
     showHeadWordLines,
+    collapseUnusedBarLevels,
     treeLayoutMode,
+    requestAutoBalance:
+      scheduleAutoBalance,
   }}
 >
   <UndoContext.Provider
     value={saveUndoSnapshot}
   >
   <ReactFlow
-    nodes={nodes}
+    nodes={displayedNodes}
     edges={displayedEdges}
     nodeTypes={nodeTypes}
     edgeTypes={edgeTypes}
