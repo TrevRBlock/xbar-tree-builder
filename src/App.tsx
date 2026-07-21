@@ -99,6 +99,17 @@ function isMaximalProjection(
   );
 }
 
+function getDefaultLexicalLabelForHead(
+  headLabel: string,
+): string {
+  return (
+    headLabel === "C" ||
+    headLabel === "T"
+  )
+    ? "∅"
+    : "";
+}
+
 const DRAG_DATA_TYPE =
   "application/x-xbar-node";
 
@@ -568,6 +579,18 @@ function SyntaxNodeComponent({
             aria-label="Edit node label"
             autoFocus
             spellCheck={false}
+            onFocus={(event) => {
+              if (
+                (
+                  data.kind === "word" ||
+                  data.kind ===
+                    "wordInput"
+                ) &&
+                data.label === "∅"
+              ) {
+                event.currentTarget.select();
+              }
+            }}
             onChange={(event) => {
               reactFlow.updateNodeData(
                 id,
@@ -1991,6 +2014,7 @@ function escapeLatexText(
     "_": "\\_",
     "^": "\\textasciicircum{}",
     "~": "\\textasciitilde{}",
+    "∅": "\\ensuremath{\\varnothing}",
   };
 
   return Array.from(value)
@@ -2519,6 +2543,7 @@ function createLatexDocument(
     "\\usepackage[T1]{fontenc}",
     "\\usepackage[utf8]{inputenc}",
     "\\usepackage[normalem]{ulem}",
+    "\\usepackage{amssymb}",
     "\\usepackage{xcolor}",
     "\\usetikzlibrary{arrows.meta,backgrounds,calc}",
     "",
@@ -4544,6 +4569,11 @@ const handleNodeDragStop:
       const wordInputId =
         `syntax-node-${firstNodeNumber + 3}`;
 
+      const defaultLexicalLabel =
+        getDefaultLexicalLabelForHead(
+          headLabel,
+        );
+
       nextNodeNumber.current += 4;
 
       draggedRootId = phraseId;
@@ -4599,7 +4629,8 @@ const handleNodeDragStop:
               placementLevelGap * 3,
           },
           data: {
-            label: "",
+            label:
+              defaultLexicalLabel,
             kind: "wordInput",
           },
         },
@@ -4651,6 +4682,11 @@ const handleNodeDragStop:
       const wordInputId =
         `syntax-node-${firstNodeNumber + 1}`;
 
+      const defaultLexicalLabel =
+        getDefaultLexicalLabelForHead(
+          item.label,
+        );
+
       nextNodeNumber.current += 2;
 
       draggedRootId = headId;
@@ -4678,7 +4714,8 @@ const handleNodeDragStop:
               placementLevelGap,
           },
           data: {
-            label: "",
+            label:
+              defaultLexicalLabel,
             kind: "wordInput",
           },
         },
@@ -5224,8 +5261,15 @@ function exportTreeAsLatex() {
       </li>
 
       <li>
-        Double-click a blank lexical
-        terminal to enter a word.
+        Double-click a lexical terminal to
+        enter or replace its content.
+      </li>
+
+      <li>
+        New C and T heads use ∅ as their
+        default lexical content. Clicking
+        or tabbing into that box selects
+        the symbol so typing replaces it.
       </li>
 
       <li>
