@@ -47,6 +47,10 @@ type NodeKind =
   | "wordInput"
   | "movementSummary";
 
+type TreeLayoutMode =
+  | "topDown"
+  | "bottomUp";
+
 interface SyntaxNodeData
   extends Record<string, unknown> {
   label: string;
@@ -196,6 +200,7 @@ interface DisplayOptionsContextValue {
   showNodeBoxes: boolean;
   showMovementArrows: boolean;
   showHeadWordLines: boolean;
+  treeLayoutMode: TreeLayoutMode;
 }
 
 const DisplayOptionsContext =
@@ -203,6 +208,7 @@ const DisplayOptionsContext =
     showNodeBoxes: true,
     showMovementArrows: true,
     showHeadWordLines: true,
+    treeLayoutMode: "topDown",
   });
 
 function createTreeSnapshot(
@@ -538,6 +544,7 @@ function SyntaxNodeComponent({
   const {
     showNodeBoxes,
     showHeadWordLines,
+    treeLayoutMode,
   } = useContext(
     DisplayOptionsContext,
   );
@@ -695,6 +702,7 @@ function SyntaxNodeComponent({
             id,
             showNodeBoxes,
             showHeadWordLines,
+            treeLayoutMode,
           );
 
         reactFlow.setNodes(
@@ -1643,7 +1651,7 @@ function wouldCreateCycle(
 }
 
 const SISTER_GAP = 36;
-const LEVEL_GAP = 65;
+const LEVEL_GAP = 85;
 
 /*
  * Boxless mode uses substantially less
@@ -1812,6 +1820,8 @@ function layoutTreeComponent(
   startingNodeId: string,
   showNodeBoxes = true,
   showHeadWordLines = true,
+  treeLayoutMode:
+    TreeLayoutMode = "topDown",
 ): SyntaxNode[] {
   const activeSisterGap =
     showNodeBoxes
@@ -2074,6 +2084,167 @@ function layoutTreeComponent(
 
   calculateSubtreeSpan(rootId);
 
+  function getMeasuredNodeHeight(
+    node: SyntaxNode,
+  ): number {
+    return (
+      node.measured?.height ??
+      (
+        showNodeBoxes
+          ? 40
+          : 20
+      )
+    );
+  }
+
+  function getParentChildGap(
+    parentNode: SyntaxNode,
+    childNode: SyntaxNode,
+  ): number {
+    if (
+      childNode.data.kind ===
+      "movementSummary"
+    ) {
+      return (
+        getMeasuredNodeHeight(
+          parentNode,
+        ) +
+        MOVEMENT_SUMMARY_APEX_OFFSET
+      );
+    }
+
+    const isHeadToLexicalChild =
+      parentNode.data.kind ===
+        "head" &&
+      (
+        childNode.data.kind ===
+          "word" ||
+        childNode.data.kind ===
+          "wordInput"
+      );
+
+    if (
+      !showHeadWordLines &&
+      isHeadToLexicalChild
+    ) {
+      return (
+        getMeasuredNodeHeight(
+          parentNode,
+        ) +
+        (
+          showNodeBoxes
+            ? 8
+            : 3
+        )
+      );
+    }
+
+    return activeLevelGap;
+  }
+
+  /*
+   * Bottom-up layout measures each node
+   * upward from the shared terminal row.
+   * Every lexical word therefore receives
+   * the same y coordinate. Shorter branches
+   * begin lower, producing the intended
+   * staggered construction from the words.
+   */
+  const terminalDistanceCache =
+    new Map<string, number>();
+
+  const nodesBeingRanked =
+    new Set<string>();
+
+  function calculateDistanceToTerminal(
+    nodeId: string,
+  ): number {
+    const cachedDistance =
+      terminalDistanceCache.get(
+        nodeId,
+      );
+
+    if (
+      cachedDistance !== undefined
+    ) {
+      return cachedDistance;
+    }
+
+    const node =
+      nodeById.get(nodeId);
+
+    if (!node) {
+      return 0;
+    }
+
+    if (
+      nodesBeingRanked.has(nodeId)
+    ) {
+      return 0;
+    }
+
+    const childIds =
+      getChildIds(nodeId);
+
+    const isTerminalNode =
+      node.data.kind === "word" ||
+      node.data.kind ===
+        "wordInput" ||
+      node.data.kind ===
+        "movementSummary" ||
+      childIds.length === 0;
+
+    if (isTerminalNode) {
+      terminalDistanceCache.set(
+        nodeId,
+        0,
+      );
+
+      return 0;
+    }
+
+    nodesBeingRanked.add(nodeId);
+
+    const distance =
+      Math.max(
+        ...childIds.map(
+          (childId) => {
+            const childNode =
+              nodeById.get(childId);
+
+            if (!childNode) {
+              return 0;
+            }
+
+            return (
+              getParentChildGap(
+                node,
+                childNode,
+              ) +
+              calculateDistanceToTerminal(
+                childId,
+              )
+            );
+          },
+        ),
+      );
+
+    nodesBeingRanked.delete(nodeId);
+
+    terminalDistanceCache.set(
+      nodeId,
+      distance,
+    );
+
+    return distance;
+  }
+
+  const bottomUpTerminalY =
+    rootNode.position.y +
+    calculateDistanceToTerminal(
+      rootId,
+    );
+
   const newPositions =
     new Map<
       string,
@@ -2097,9 +2268,17 @@ function layoutTreeComponent(
     const nodeWidth =
       getSyntaxNodeWidth(node);
 
+    const nodeY =
+      treeLayoutMode === "bottomUp"
+        ? bottomUpTerminalY -
+          calculateDistanceToTerminal(
+            nodeId,
+          )
+        : y;
+
     newPositions.set(nodeId, {
       x: centreX - nodeWidth / 2,
-      y,
+      y: nodeY,
     });
 
     const childIds =
@@ -2143,53 +2322,22 @@ childIds.forEach(
     const childNode =
       nodeById.get(childId);
 
-    /*
-     * Movement summaries use an absolutely
-     * positioned triangle whose apex sits
-     * above the summary node. Calculate its
-     * vertical position from the parent's
-     * actual measured height rather than the
-     * ordinary level gap.
-     *
-     * This keeps the triangle apex attached
-     * to the phrase label in both boxed and
-     * boxless modes.
-     */
-    const parentHeight =
-      node.measured?.height ??
-      (
-        showNodeBoxes
-          ? 40
-          : 20
-      );
-
-    const isHeadToLexicalChild =
-      node.data.kind === "head" &&
-      (
-        childNode?.data.kind ===
-          "word" ||
-        childNode?.data.kind ===
-          "wordInput"
-      );
-
     const childY =
-      childNode?.data.kind ===
-      "movementSummary"
-        ? y +
-          parentHeight +
-          MOVEMENT_SUMMARY_APEX_OFFSET
-        : (
-            !showHeadWordLines &&
-            isHeadToLexicalChild
+      childNode
+        ? (
+            treeLayoutMode ===
+              "bottomUp"
+              ? bottomUpTerminalY -
+                calculateDistanceToTerminal(
+                  childId,
+                )
+              : nodeY +
+                getParentChildGap(
+                  node,
+                  childNode,
+                )
           )
-          ? y +
-            parentHeight +
-            (
-              showNodeBoxes
-                ? 8
-                : 3
-            )
-          : y + activeLevelGap;
+        : nodeY + activeLevelGap;
 
     placeSubtree(
       childId,
@@ -2237,6 +2385,7 @@ function layoutAllTreeComponents(
   currentEdges: readonly Edge[],
   showNodeBoxes: boolean,
   showHeadWordLines: boolean,
+  treeLayoutMode: TreeLayoutMode,
 ): SyntaxNode[] {
   if (currentNodes.length === 0) {
     return [];
@@ -2297,6 +2446,7 @@ function layoutAllTreeComponents(
         rootNode.id,
         showNodeBoxes,
         showHeadWordLines,
+        treeLayoutMode,
       );
   }
 
@@ -3198,6 +3348,9 @@ const SHOW_MOVEMENT_ARROWS_STORAGE_KEY =
 const SHOW_HEAD_WORD_LINES_STORAGE_KEY =
   "xbar-tree-builder-show-head-word-lines-v1";
 
+const TREE_LAYOUT_MODE_STORAGE_KEY =
+  "xbar-tree-builder-layout-mode-v1";
+
 function loadShowNodeBoxes(): boolean {
   if (
     typeof window === "undefined"
@@ -3265,6 +3418,28 @@ function loadShowHeadWordLines(): boolean {
     return savedValue === "true";
   } catch {
     return true;
+  }
+}
+
+function loadTreeLayoutMode():
+  TreeLayoutMode {
+  if (
+    typeof window === "undefined"
+  ) {
+    return "topDown";
+  }
+
+  try {
+    const savedValue =
+      window.localStorage.getItem(
+        TREE_LAYOUT_MODE_STORAGE_KEY,
+      );
+
+    return savedValue === "bottomUp"
+      ? "bottomUp"
+      : "topDown";
+  } catch {
+    return "topDown";
   }
 }
 
@@ -3538,6 +3713,13 @@ const [
   loadShowHeadWordLines,
 );
 
+const [
+  treeLayoutMode,
+  setTreeLayoutMode,
+] = useState<TreeLayoutMode>(
+  loadTreeLayoutMode,
+);
+
 useEffect(() => {
   try {
     window.localStorage.setItem(
@@ -3580,6 +3762,20 @@ useEffect(() => {
   }
 }, [showHeadWordLines]);
 
+useEffect(() => {
+  try {
+    window.localStorage.setItem(
+      TREE_LAYOUT_MODE_STORAGE_KEY,
+      treeLayoutMode,
+    );
+  } catch (error) {
+    console.error(
+      "The tree layout mode could not be saved.",
+      error,
+    );
+  }
+}, [treeLayoutMode]);
+
 const autoBalanceFrameRef =
   useRef<number | null>(null);
 
@@ -3621,6 +3817,7 @@ const scheduleAutoBalance =
                 currentEdges,
                 showNodeBoxes,
                 showHeadWordLines,
+                treeLayoutMode,
               );
 
             if (
@@ -3643,6 +3840,7 @@ const scheduleAutoBalance =
     setNodes,
     showHeadWordLines,
     showNodeBoxes,
+    treeLayoutMode,
   ]);
 
 useEffect(() => {
@@ -3697,6 +3895,7 @@ useEffect(() => {
   layoutStructureSignature,
   scheduleAutoBalance,
   showNodeBoxes,
+  treeLayoutMode,
 ]);
 
 /*
@@ -3988,6 +4187,7 @@ function attachDirectly(
       parentNode.id,
       showNodeBoxes,
       showHeadWordLines,
+      treeLayoutMode,
     );
 
   if (
@@ -4002,6 +4202,7 @@ function attachDirectly(
         previousParentEdge.source,
         showNodeBoxes,
         showHeadWordLines,
+        treeLayoutMode,
       );
   }
 
@@ -4175,6 +4376,7 @@ function attachAsAdjunct(
       newBarId,
       showNodeBoxes,
       showHeadWordLines,
+      treeLayoutMode,
     );
 
   if (
@@ -4189,6 +4391,7 @@ function attachAsAdjunct(
         previousAdjunctParentEdge.source,
         showNodeBoxes,
         showHeadWordLines,
+        treeLayoutMode,
       );
   }
 
@@ -4395,6 +4598,7 @@ function attachHeadAsAdjunct(
       newUpperHeadId,
       showNodeBoxes,
       showHeadWordLines,
+      treeLayoutMode,
     );
 
   if (
@@ -4409,6 +4613,7 @@ function attachHeadAsAdjunct(
         previousAdjunctParentEdge.source,
         showNodeBoxes,
         showHeadWordLines,
+        treeLayoutMode,
       );
   }
 
@@ -5020,6 +5225,7 @@ function moveAttachedSubtree(
       higherLayoutStartId,
       showNodeBoxes,
       showHeadWordLines,
+      treeLayoutMode,
     );
 
   setNodes(balancedNodes);
@@ -5443,6 +5649,7 @@ function attachCreatedHeadAsAdjunct(
       newUpperHeadId,
       showNodeBoxes,
       showHeadWordLines,
+      treeLayoutMode,
     );
 
   setNodes(balancedNodes);
@@ -5522,6 +5729,7 @@ function attachCreatedHeadAsAdjunct(
       parentNode.id,
       showNodeBoxes,
       showHeadWordLines,
+      treeLayoutMode,
     );
 
   setNodes(balancedNodes);
@@ -5816,6 +6024,7 @@ function attachCreatedHeadAsAdjunct(
           draggedRootId,
           showNodeBoxes,
           showHeadWordLines,
+          treeLayoutMode,
         );
 
       setNodes(balancedNodes);
@@ -6618,6 +6827,53 @@ function exportTreeAsLatex() {
 
   <details>
     <summary>
+      Choose top-down or bottom-up layout
+    </summary>
+
+    <ul>
+      <li>
+        Use the Tree layout menu in the
+        toolbar to choose Top-down or
+        Bottom-up.
+      </li>
+
+      <li>
+        Top-down keeps every node at a
+        regular depth below the root.
+      </li>
+
+      <li>
+        Bottom-up places all lexical words
+        on one shared terminal row and
+        staggers the remaining structure
+        upward from those words.
+      </li>
+
+      <li>
+        Changing the menu immediately
+        rebalances the complete tree.
+      </li>
+
+      <li>
+        New nodes, attachments, movement,
+        editing, and restored sessions use
+        the selected layout mode.
+      </li>
+
+      <li>
+        PNG and LaTeX exports preserve the
+        currently displayed layout.
+      </li>
+
+      <li>
+        The selected layout is remembered
+        when the page is reopened.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
       Show or hide label boxes
     </summary>
 
@@ -6798,6 +7054,60 @@ function exportTreeAsLatex() {
           </div>
 
           <div className="toolbar-buttons">
+            <label
+              title="Choose whether tree levels grow downward from the root or upward from an aligned terminal row"
+              style={{
+                display:
+                  "inline-flex",
+                alignItems:
+                  "center",
+                gap: 7,
+                padding:
+                  "7px 10px",
+                border:
+                  "1px solid #c7ccd4",
+                borderRadius: 6,
+                background:
+                  "#ffffff",
+                userSelect:
+                  "none",
+                fontSize: 14,
+              }}
+            >
+              Tree layout
+
+              <select
+                value={
+                  treeLayoutMode
+                }
+                onChange={(event) =>
+                  setTreeLayoutMode(
+                    event.target
+                      .value as
+                      TreeLayoutMode,
+                  )
+                }
+                aria-label="Tree layout direction"
+                style={{
+                  minHeight: 28,
+                  border:
+                    "1px solid #aeb5bf",
+                  borderRadius: 4,
+                  background:
+                    "#ffffff",
+                  font: "inherit",
+                }}
+              >
+                <option value="topDown">
+                  Top-down
+                </option>
+
+                <option value="bottomUp">
+                  Bottom-up
+                </option>
+              </select>
+            </label>
+
             <span
               role="group"
               aria-label="Text formatting"
@@ -7071,6 +7381,7 @@ function exportTreeAsLatex() {
     showNodeBoxes,
     showMovementArrows,
     showHeadWordLines,
+    treeLayoutMode,
   }}
 >
   <UndoContext.Provider
