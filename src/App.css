@@ -513,3 +513,31 @@ button {
   stroke: #333b47;
   stroke-width: 2;
 }
+
+.toolbar-buttons .undo-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-color: #313946;
+  background: #313946;
+  color: #ffffff;
+}
+
+.toolbar-buttons
+  .undo-button:hover:not(:disabled) {
+  background: #202630;
+}
+
+.toolbar-buttons button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.undo-shortcut {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background:
+    rgba(255, 255, 255, 0.16);
+  font-size: 11px;
+  font-weight: 500;
+}

@@ -3,6 +3,8 @@ import {
   useRef,
   useState,
   useEffect,
+  createContext,
+  useContext,
   type DragEvent,
 } from "react";
 
@@ -119,6 +121,50 @@ const headLabels: PaletteItem[] = [
   { label: "Qual", kind: "head" },
 ];
 
+interface TreeSnapshot {
+  nodes: SyntaxNode[];
+  edges: Edge[];
+}
+
+const UndoContext =
+  createContext<(() => void) | null>(
+    null,
+  );
+
+function createTreeSnapshot(
+  currentNodes: readonly SyntaxNode[],
+  currentEdges: readonly Edge[],
+): TreeSnapshot {
+  return {
+    nodes: currentNodes.map((node) => ({
+      ...node,
+
+      position: {
+        ...node.position,
+      },
+
+      data: {
+        ...node.data,
+      },
+
+      selected: false,
+      dragging: false,
+    })),
+
+    edges: currentEdges.map((edge) => ({
+      ...edge,
+
+      data: edge.data
+        ? {
+            ...edge.data,
+          }
+        : undefined,
+
+      selected: false,
+    })),
+  };
+}
+
 function SyntaxNodeComponent({
   id,
   data,
@@ -126,6 +172,9 @@ function SyntaxNodeComponent({
 }: NodeProps<SyntaxNode>) {
   const reactFlow =
     useReactFlow<SyntaxNode, Edge>();
+
+    const saveUndoSnapshot =
+  useContext(UndoContext);
 
   const updateNodeInternals =
     useUpdateNodeInternals();
@@ -203,9 +252,14 @@ function SyntaxNodeComponent({
         .join(" ")}
       title="Double-click to edit"
       onDoubleClick={(event) => {
-        event.stopPropagation();
-        setIsEditing(true);
-      }}
+  event.stopPropagation();
+
+  if (!isEditing) {
+    saveUndoSnapshot?.();
+  }
+
+  setIsEditing(true);
+}}
     >
       <Handle
         type="target"
@@ -1271,18 +1325,225 @@ function getNodeAtFlowPosition(
   return matchingNodes[0] ?? null;
 }
 
+const TREE_SESSION_STORAGE_KEY =
+  "xbar-tree-builder-session-v1";
+
+interface SavedTreeSession {
+  nodes: SyntaxNode[];
+  edges: Edge[];
+  nextNodeNumber: number;
+}
+
+function calculateNextNodeNumber(
+  currentNodes: readonly SyntaxNode[],
+): number {
+  let highestNodeNumber = 0;
+
+  for (const node of currentNodes) {
+    const match = node.id.match(
+      /^syntax-node-(\d+)$/,
+    );
+
+    if (!match) {
+      continue;
+    }
+
+    const nodeNumber = Number(match[1]);
+
+    if (
+      Number.isFinite(nodeNumber)
+    ) {
+      highestNodeNumber = Math.max(
+        highestNodeNumber,
+        nodeNumber,
+      );
+    }
+  }
+
+  return highestNodeNumber + 1;
+}
+
+function createSavedTreeSession(
+  currentNodes: readonly SyntaxNode[],
+  currentEdges: readonly Edge[],
+  nextNodeNumber: number,
+): SavedTreeSession {
+  return {
+    nodes: currentNodes.map(
+      (node): SyntaxNode => ({
+        id: node.id,
+        type: "syntaxNode",
+        position: {
+          ...node.position,
+        },
+        data: {
+          ...node.data,
+        },
+      }),
+    ),
+
+    edges: currentEdges.map(
+      (edge): Edge => ({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle:
+          edge.sourceHandle,
+        targetHandle:
+          edge.targetHandle,
+        type:
+          edge.type ?? "straight",
+        data: edge.data
+          ? {
+              ...edge.data,
+            }
+          : undefined,
+      }),
+    ),
+
+    nextNodeNumber,
+  };
+}
+
+function loadSavedTreeSession():
+  SavedTreeSession {
+  const emptySession: SavedTreeSession = {
+    nodes: [],
+    edges: [],
+    nextNodeNumber: 1,
+  };
+
+  if (
+    typeof window === "undefined"
+  ) {
+    return emptySession;
+  }
+
+  try {
+    const savedValue =
+      window.localStorage.getItem(
+        TREE_SESSION_STORAGE_KEY,
+      );
+
+    if (!savedValue) {
+      return emptySession;
+    }
+
+    const parsedValue =
+      JSON.parse(
+        savedValue,
+      ) as Partial<SavedTreeSession>;
+
+    if (
+      !Array.isArray(
+        parsedValue.nodes,
+      ) ||
+      !Array.isArray(
+        parsedValue.edges,
+      )
+    ) {
+      return emptySession;
+    }
+
+    const restoredNodes =
+      parsedValue.nodes.map(
+        (node): SyntaxNode => ({
+          ...node,
+          position: {
+            ...node.position,
+          },
+          data: {
+            ...node.data,
+          },
+          selected: false,
+          dragging: false,
+        }),
+      );
+
+    const restoredEdges =
+      parsedValue.edges.map(
+        (edge): Edge => ({
+          ...edge,
+          data: edge.data
+            ? {
+                ...edge.data,
+              }
+            : undefined,
+          selected: false,
+        }),
+      );
+
+    const calculatedNextNumber =
+      calculateNextNodeNumber(
+        restoredNodes,
+      );
+
+    const savedNextNumber =
+      typeof parsedValue
+        .nextNodeNumber ===
+        "number" &&
+      Number.isFinite(
+        parsedValue.nextNodeNumber,
+      )
+        ? parsedValue.nextNodeNumber
+        : 1;
+
+    return {
+      nodes: restoredNodes,
+      edges: restoredEdges,
+      nextNodeNumber: Math.max(
+        1,
+        savedNextNumber,
+        calculatedNextNumber,
+      ),
+    };
+  } catch (error) {
+    console.error(
+      "The saved tree could not be loaded.",
+      error,
+    );
+
+    return emptySession;
+  }
+}
+
+function saveTreeSession(
+  session: SavedTreeSession,
+) {
+  try {
+    window.localStorage.setItem(
+      TREE_SESSION_STORAGE_KEY,
+      JSON.stringify(session),
+    );
+  } catch (error) {
+    console.error(
+      "The tree could not be saved.",
+      error,
+    );
+  }
+}
+
 function TreeBuilder() {
+  const [initialSession] =
+    useState<SavedTreeSession>(
+      loadSavedTreeSession,
+    );
+
   const [
     nodes,
     setNodes,
     onNodesChange,
-  ] = useNodesState<SyntaxNode>([]);
+  ] = useNodesState<SyntaxNode>(
+    initialSession.nodes,
+  );
 
   const [
     edges,
     setEdges,
     onEdgesChange,
-  ] = useEdgesState<Edge>([]);
+  ] = useEdgesState<Edge>(
+    initialSession.edges,
+  );
 
   const [
     reactFlowInstance,
@@ -1301,25 +1562,200 @@ function TreeBuilder() {
   PendingBarAttachment | null
 >(null);
 
-  const nextNodeNumber = useRef(1);
+  const nextNodeNumber = useRef(
+  initialSession.nextNodeNumber,
+);
 
   const flowCanvasRef =
   useRef<HTMLDivElement>(null);
 
-  const onConnect = useCallback(
-    (connection: Connection) => {
-      setEdges((currentEdges) =>
-        addEdge(
-          {
-            ...connection,
-            type: "straight",
-          },
-          currentEdges,
-        ),
+  const latestSessionRef =
+  useRef<SavedTreeSession>(
+    initialSession,
+  );
+
+  const undoStackRef =
+  useRef<TreeSnapshot[]>([]);
+
+const dragStartSnapshotRef =
+  useRef<TreeSnapshot | null>(null);
+
+const [undoCount, setUndoCount] =
+  useState(0);
+
+  const handleNodeDragStart:
+  OnNodeDrag<SyntaxNode> =
+  useCallback(() => {
+    dragStartSnapshotRef.current =
+      createTreeSnapshot(
+        nodes,
+        edges,
+      );
+  }, [
+    edges,
+    nodes,
+  ]);
+
+/*
+ * Save shortly after any node or edge
+ * change. The delay prevents excessive
+ * localStorage writes while dragging.
+ */
+useEffect(() => {
+  const session =
+    createSavedTreeSession(
+      nodes,
+      edges,
+      nextNodeNumber.current,
+    );
+
+  latestSessionRef.current =
+    session;
+
+  const saveTimer =
+    window.setTimeout(() => {
+      saveTreeSession(session);
+    }, 250);
+
+  return () => {
+    window.clearTimeout(
+      saveTimer,
+    );
+  };
+}, [nodes, edges]);
+
+/*
+ * Save immediately when the page is
+ * closed, refreshed, or navigated away
+ * from.
+ */
+useEffect(() => {
+  function saveBeforeLeaving() {
+    saveTreeSession(
+      latestSessionRef.current,
+    );
+  }
+
+  window.addEventListener(
+    "pagehide",
+    saveBeforeLeaving,
+  );
+
+  return () => {
+    window.removeEventListener(
+      "pagehide",
+      saveBeforeLeaving,
+    );
+  };
+}, []);
+
+  const pushUndoSnapshot =
+  useCallback(
+    (snapshot: TreeSnapshot) => {
+      undoStackRef.current = [
+        ...undoStackRef.current,
+        snapshot,
+      ].slice(-50);
+
+      setUndoCount(
+        undoStackRef.current.length,
       );
     },
-    [setEdges],
+    [],
   );
+
+const saveUndoSnapshot =
+  useCallback(() => {
+    pushUndoSnapshot(
+      createTreeSnapshot(
+        nodes,
+        edges,
+      ),
+    );
+  }, [
+    edges,
+    nodes,
+    pushUndoSnapshot,
+  ]);
+
+const undoLastAction =
+  useCallback(() => {
+    const previousSnapshot =
+      undoStackRef.current.pop();
+
+    if (!previousSnapshot) {
+      return;
+    }
+
+    setPendingBarAttachment(null);
+
+    setNodes(
+      previousSnapshot.nodes,
+    );
+
+    setEdges(
+      previousSnapshot.edges,
+    );
+
+    setUndoCount(
+      undoStackRef.current.length,
+    );
+  }, [
+    setEdges,
+    setNodes,
+  ]);
+
+  useEffect(() => {
+  function handleUndoShortcut(
+    event: KeyboardEvent,
+  ) {
+    const isUndoShortcut =
+      (event.ctrlKey ||
+        event.metaKey) &&
+      event.key.toLowerCase() ===
+        "z" &&
+      !event.shiftKey;
+
+    if (!isUndoShortcut) {
+      return;
+    }
+
+    event.preventDefault();
+    undoLastAction();
+  }
+
+  window.addEventListener(
+    "keydown",
+    handleUndoShortcut,
+  );
+
+  return () => {
+    window.removeEventListener(
+      "keydown",
+      handleUndoShortcut,
+    );
+  };
+}, [undoLastAction]);
+
+  const onConnect = useCallback(
+  (connection: Connection) => {
+    saveUndoSnapshot();
+
+    setEdges((currentEdges) =>
+      addEdge(
+        {
+          ...connection,
+          type: "straight",
+        },
+        currentEdges,
+      ),
+    );
+  },
+  [
+    saveUndoSnapshot,
+    setEdges,
+  ],
+);
 
   function attachDirectly(
   attachment: PendingBarAttachment,
@@ -1667,6 +2103,17 @@ function attachAsAdjunct(
     if (!reactFlowInstance) {
       return;
     }
+    const dragStartSnapshot =
+  dragStartSnapshotRef.current;
+
+if (dragStartSnapshot) {
+  pushUndoSnapshot(
+    dragStartSnapshot,
+  );
+
+  dragStartSnapshotRef.current =
+    null;
+}
 
     const intersectingNodes =
       reactFlowInstance
@@ -1947,6 +2394,7 @@ function attachAsAdjunct(
           y: event.clientY,
         });
 
+        saveUndoSnapshot();
     /*
      * Check the existing canvas before
      * adding the new nodes.
@@ -2251,36 +2699,71 @@ function attachAsAdjunct(
 }
 
   function clearCanvas() {
-    setNodes([]);
-    setEdges([]);
+  if (
+    nodes.length === 0 &&
+    edges.length === 0
+  ) {
+    return;
   }
+
+  saveUndoSnapshot();
+
+  setNodes([]);
+  setEdges([]);
+
+  setPendingBarAttachment(null);
+}
 
   function deleteSelected() {
-    const selectedNodeIds = new Set(
-      nodes
-        .filter((node) => node.selected)
-        .map((node) => node.id),
+  const hasSelectedNode =
+    nodes.some(
+      (node) => node.selected,
     );
 
-    setNodes((currentNodes) =>
-      currentNodes.filter(
-        (node) => !node.selected,
-      ),
+  const hasSelectedEdge =
+    edges.some(
+      (edge) => edge.selected,
     );
 
-    setEdges((currentEdges) =>
-      currentEdges.filter(
-        (edge) =>
-          !edge.selected &&
-          !selectedNodeIds.has(
-            edge.source,
-          ) &&
-          !selectedNodeIds.has(
-            edge.target,
-          ),
-      ),
-    );
+  if (
+    !hasSelectedNode &&
+    !hasSelectedEdge
+  ) {
+    return;
   }
+
+  saveUndoSnapshot();
+
+  const selectedNodeIds =
+    new Set(
+      nodes
+        .filter(
+          (node) => node.selected,
+        )
+        .map(
+          (node) => node.id,
+        ),
+    );
+
+  setNodes((currentNodes) =>
+    currentNodes.filter(
+      (node) => !node.selected,
+    ),
+  );
+
+  setEdges((currentEdges) =>
+    currentEdges.filter(
+      (edge) =>
+        !edge.selected &&
+        !selectedNodeIds.has(
+          edge.source,
+        ) &&
+        !selectedNodeIds.has(
+          edge.target,
+        ),
+    ),
+  );
+}
 
   async function exportTreeAsPng() {
   if (nodes.length === 0) {
@@ -2730,6 +3213,35 @@ function exportTreeAsLatex() {
       </li>
     </ul>
   </details>
+
+  <details>
+  <summary>
+    Automatic session saving
+  </summary>
+
+  <ul>
+    <li>
+      The current tree is saved
+      automatically in this browser.
+    </li>
+
+    <li>
+      Closing or refreshing the page
+      does not remove the tree.
+    </li>
+
+    <li>
+      Reopening the tree builder restores
+      the saved nodes, labels, branches,
+      and positions.
+    </li>
+
+    <li>
+      Clear canvas permanently replaces
+      the saved tree with an empty canvas.
+    </li>
+  </ul>
+</details>
 </section>
       </aside>
 
@@ -2745,6 +3257,18 @@ function exportTreeAsLatex() {
           </div>
 
           <div className="toolbar-buttons">
+            <button
+  type="button"
+  className="undo-button"
+  onClick={undoLastAction}
+  disabled={undoCount === 0}
+  title="Undo the last action (Ctrl+Z)"
+>
+  Undo
+  <span className="undo-shortcut">
+    Ctrl+Z
+  </span>
+</button>
             <button
   type="button"
   onClick={exportTreeAsPng}
@@ -2783,42 +3307,42 @@ function exportTreeAsLatex() {
   }
   onDrop={handleCanvasDrop}
 >
-          <ReactFlow
-  nodes={nodes}
-  edges={edges}
-  nodeTypes={nodeTypes}
-  onNodesChange={
-    onNodesChange
-  }
-  onEdgesChange={
-    onEdgesChange
-  }
-  onConnect={onConnect}
-  onNodeDragStop={
-    handleNodeDragStop
-  }
-            onInit={
-              setReactFlowInstance
-            }
-            deleteKeyCode={[
-              "Backspace",
-              "Delete",
-            ]}
-            defaultEdgeOptions={{
-              type: "straight",
-              style: {
-                strokeWidth: 2,
-              },
-            }}
-            fitView
-          >
-            <Background
-              gap={24}
-              size={1}
-            />
+          <UndoContext.Provider
+  value={saveUndoSnapshot}
+>
+  <ReactFlow
+    nodes={nodes}
+    edges={edges}
+    nodeTypes={nodeTypes}
+    onNodesChange={onNodesChange}
+    onEdgesChange={onEdgesChange}
+    onConnect={onConnect}
+    onNodeDragStart={
+      handleNodeDragStart
+    }
+    onNodeDragStop={
+      handleNodeDragStop
+    }
+    onInit={
+      setReactFlowInstance
+    }
+    deleteKeyCode={null}
+    defaultEdgeOptions={{
+      type: "straight",
+      style: {
+        strokeWidth: 2,
+      },
+    }}
+    fitView
+  >
+    <Background
+      gap={24}
+      size={1}
+    />
 
-            <Controls />
-          </ReactFlow>
+    <Controls />
+  </ReactFlow>
+</UndoContext.Provider>
         </div>
       </main>
     
