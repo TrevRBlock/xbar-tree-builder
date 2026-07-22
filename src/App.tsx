@@ -105,21 +105,23 @@ interface PaletteItem {
 }
 
 type MaximalProjection =
-  | "CP"
-  | "TP"
-  | "DP"
-  | "NP"
-  | "VP"
-  | "PP"
   | "AdjP"
   | "AdvP"
   | "AuxP"
-  | "PerfP"
-  | "ProgP"
-  | "VoiceP"
-  | "TopP"
+  | "ClassP"
+  | "CP"
+  | "DP"
   | "FocP"
-  | "ClassP";
+  | "NP"
+  | "PerfP"
+  | "PP"
+  | "ProgP"
+  | "QP"
+  | "TopP"
+  | "TP"
+  | "VoiceP"
+  | "VP"
+  | "vP";
 
 const projectionChains: Record<
   MaximalProjection,
@@ -129,21 +131,23 @@ const projectionChains: Record<
     head: string,
   ]
 > = {
-  CP: ["CP", "C′", "C"],
-  TP: ["TP", "T′", "T"],
-  DP: ["DP", "D′", "D"],
-  NP: ["NP", "N′", "N"],
-  VP: ["VP", "V′", "V"],
-  PP: ["PP", "P′", "P"],
   AdjP: ["AdjP", "Adj′", "Adj"],
   AdvP: ["AdvP", "Adv′", "Adv"],
   AuxP: ["AuxP", "Aux′", "Aux"],
-  PerfP: ["PerfP", "Perf'", "Perf"],
-  ProgP: ["ProgP", "Prog'", "Prog"],
-  VoiceP: ["VoiceP", "Voice'", "Voice"],
-  TopP: ["TopP", "Top'", "Top"],
-  FocP: ["FocP", "Foc'", "Foc"],
   ClassP: ["ClassP", "Class'", "Class"],
+  CP: ["CP", "C′", "C"],
+  DP: ["DP", "D′", "D"],
+  FocP: ["FocP", "Foc'", "Foc"],
+  NP: ["NP", "N′", "N"],
+  PerfP: ["PerfP", "Perf'", "Perf"],
+  PP: ["PP", "P′", "P"],
+  ProgP: ["ProgP", "Prog'", "Prog"],
+  QP: ["QP", "Q′", "Q"],
+  TopP: ["TopP", "Top'", "Top"],
+  TP: ["TP", "T′", "T"],
+  VoiceP: ["VoiceP", "Voice'", "Voice"],
+  VP: ["VP", "V′", "V"],
+  vP: ["vP", "v′", "v"],
 };
 
 function isMaximalProjection(
