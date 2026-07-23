@@ -108,6 +108,7 @@ type MaximalProjection =
   | "AdjP"
   | "AdvP"
   | "AuxP"
+  | "ConjP"
   | "ClassP"
   | "CP"
   | "DP"
@@ -135,6 +136,7 @@ const projectionChains: Record<
   AdvP: ["AdvP", "Adv′", "Adv"],
   AuxP: ["AuxP", "Aux′", "Aux"],
   ClassP: ["ClassP", "Class'", "Class"],
+  ConjP: ["ConjP", "Conj'", "Conj"],
   CP: ["CP", "C′", "C"],
   DP: ["DP", "D′", "D"],
   FocP: ["FocP", "Foc'", "Foc"],
@@ -184,20 +186,21 @@ const phraseLabels: PaletteItem[] = [
   { label: "AdjP", kind: "phrase" },
   { label: "AdvP", kind: "phrase" },
   { label: "AuxP", kind: "phrase" },
-  { label: "ClassP", kind: "phrase" },
   { label: "CP", kind: "phrase" },
+  { label: "ClassP", kind: "phrase" },
+  { label: "ConjP", kind: "phrase" },
   { label: "DP", kind: "phrase" },
   { label: "FocP", kind: "phrase" },
   { label: "NP", kind: "phrase" },
-  { label: "PerfP", kind: "phrase" },
   { label: "PP", kind: "phrase" },
+  { label: "PerfP", kind: "phrase" },
   { label: "ProgP", kind: "phrase" },
   { label: "QP", kind: "phrase" },
-  { label: "TopP", kind: "phrase" },
   { label: "TP", kind: "phrase" },
-  { label: "VoiceP", kind: "phrase" },
-  { label: "VP", kind: "phrase" },
+  { label: "TopP", kind: "phrase" },
   { label: "vP", kind: "phrase" },
+  { label: "VP", kind: "phrase" },
+  { label: "VoiceP", kind: "phrase" },
 ];
 
 const headLabels: PaletteItem[] = [
@@ -206,19 +209,20 @@ const headLabels: PaletteItem[] = [
   { label: "Aux", kind: "head" },
   { label: "C", kind: "head" },
   { label: "Class", kind: "head" },
+  { label: "Conj", kind: "head" },
   { label: "D", kind: "head" },
-  { label: "Focus", kind: "head" },
+  { label: "Foc", kind: "head" },
   { label: "N", kind: "head" },
   { label: "P", kind: "head" },
   { label: "Perf", kind: "head" },
   { label: "Prog", kind: "head" },
   { label: "Q", kind: "head" },
-  { label: "Qual", kind: "head" },
   { label: "T", kind: "head" },
   { label: "Top", kind: "head" },
+  { label: "v", kind: "head" },
   { label: "V", kind: "head" },
   { label: "Voice", kind: "head" },
-  { label: "v", kind: "head" },
+  { label: "Qual", kind: "head" },
 ];
 
 interface TreeSnapshot {
@@ -2224,6 +2228,16 @@ const BOXLESS_SISTER_GAP = 24;
 const BOXLESS_LEVEL_GAP = 42;
 
 /*
+ * Bottom-up layout begins with the same compact
+ * sister spacing as top-down layout. A later
+ * collision pass shifts only the specific
+ * subtrees whose branch lines overlap.
+ */
+const BOTTOM_UP_OVERLAP_CLEARANCE = 14;
+const BOTTOM_UP_OVERLAP_STEP = 8;
+const BOTTOM_UP_MAX_OVERLAP_PASSES = 120;
+
+/*
  * The condensed-copy triangle is positioned
  * 54 pixels above its React Flow node.
  * This value places the triangle apex exactly
@@ -3272,6 +3286,747 @@ childIds.forEach(
     rootNode.position.y,
   );
 
+  function resolveBottomUpOverlaps() {
+    if (
+      treeLayoutMode !== "bottomUp"
+    ) {
+      return;
+    }
+
+    const structuralChildEdges =
+      structuralEdges.filter(
+        (edge) =>
+          nodeById.has(edge.source) &&
+          nodeById.has(edge.target),
+      );
+
+    const descendantCache =
+      new Map<string, Set<string>>();
+
+    function getDescendantIds(
+      rootNodeId: string,
+    ): Set<string> {
+      const cached =
+        descendantCache.get(
+          rootNodeId,
+        );
+
+      if (cached) {
+        return cached;
+      }
+
+      const descendants =
+        new Set<string>([
+          rootNodeId,
+        ]);
+
+      const pendingIds = [
+        rootNodeId,
+      ];
+
+      while (pendingIds.length > 0) {
+        const currentNodeId =
+          pendingIds.pop();
+
+        if (!currentNodeId) {
+          continue;
+        }
+
+        const childEdges =
+          childEdgesByParent.get(
+            currentNodeId,
+          ) ?? [];
+
+        for (const childEdge of childEdges) {
+          if (
+            descendants.has(
+              childEdge.target,
+            )
+          ) {
+            continue;
+          }
+
+          descendants.add(
+            childEdge.target,
+          );
+
+          pendingIds.push(
+            childEdge.target,
+          );
+        }
+      }
+
+      descendantCache.set(
+        rootNodeId,
+        descendants,
+      );
+
+      return descendants;
+    }
+
+    function getPosition(
+      nodeId: string,
+    ) {
+      return (
+        newPositions.get(nodeId) ??
+        nodeById.get(nodeId)?.position
+      );
+    }
+
+    function getNodeCentre(
+      nodeId: string,
+    ): {
+      x: number;
+      y: number;
+    } | null {
+      const node =
+        nodeById.get(nodeId);
+
+      const position =
+        getPosition(nodeId);
+
+      if (
+        !node ||
+        !position
+      ) {
+        return null;
+      }
+
+      return {
+        x:
+          position.x +
+          getSyntaxNodeWidth(node) /
+            2,
+        y:
+          position.y +
+          getMeasuredNodeHeight(
+            node,
+          ) /
+            2,
+      };
+    }
+
+    function getEdgeSegment(
+      edge: Edge,
+    ) {
+      const sourceNode =
+        nodeById.get(
+          edge.source,
+        );
+
+      const targetNode =
+        nodeById.get(
+          edge.target,
+        );
+
+      const sourcePosition =
+        getPosition(
+          edge.source,
+        );
+
+      const targetPosition =
+        getPosition(
+          edge.target,
+        );
+
+      if (
+        !sourceNode ||
+        !targetNode ||
+        !sourcePosition ||
+        !targetPosition
+      ) {
+        return null;
+      }
+
+      return {
+        start: {
+          x:
+            sourcePosition.x +
+            getSyntaxNodeWidth(
+              sourceNode,
+            ) /
+              2,
+          y:
+            sourcePosition.y +
+            getMeasuredNodeHeight(
+              sourceNode,
+            ),
+        },
+        end: {
+          x:
+            targetPosition.x +
+            getSyntaxNodeWidth(
+              targetNode,
+            ) /
+              2,
+          y:
+            targetPosition.y,
+        },
+      };
+    }
+
+    function orientation(
+      first: {
+        x: number;
+        y: number;
+      },
+      second: {
+        x: number;
+        y: number;
+      },
+      third: {
+        x: number;
+        y: number;
+      },
+    ): number {
+      return (
+        (
+          second.x -
+          first.x
+        ) *
+        (
+          third.y -
+          first.y
+        ) -
+        (
+          second.y -
+          first.y
+        ) *
+        (
+          third.x -
+          first.x
+        )
+      );
+    }
+
+    function segmentsCross(
+      firstStart: {
+        x: number;
+        y: number;
+      },
+      firstEnd: {
+        x: number;
+        y: number;
+      },
+      secondStart: {
+        x: number;
+        y: number;
+      },
+      secondEnd: {
+        x: number;
+        y: number;
+      },
+    ): boolean {
+      const firstOrientation =
+        orientation(
+          firstStart,
+          firstEnd,
+          secondStart,
+        );
+
+      const secondOrientation =
+        orientation(
+          firstStart,
+          firstEnd,
+          secondEnd,
+        );
+
+      const thirdOrientation =
+        orientation(
+          secondStart,
+          secondEnd,
+          firstStart,
+        );
+
+      const fourthOrientation =
+        orientation(
+          secondStart,
+          secondEnd,
+          firstEnd,
+        );
+
+      const epsilon = 0.5;
+
+      return (
+        (
+          firstOrientation >
+            epsilon &&
+          secondOrientation <
+            -epsilon ||
+          firstOrientation <
+            -epsilon &&
+          secondOrientation >
+            epsilon
+        ) &&
+        (
+          thirdOrientation >
+            epsilon &&
+          fourthOrientation <
+            -epsilon ||
+          thirdOrientation <
+            -epsilon &&
+          fourthOrientation >
+            epsilon
+        )
+      );
+    }
+
+    function segmentIntersectsRectangle(
+      start: {
+        x: number;
+        y: number;
+      },
+      end: {
+        x: number;
+        y: number;
+      },
+      left: number,
+      top: number,
+      right: number,
+      bottom: number,
+    ): boolean {
+      if (
+        Math.max(
+          start.x,
+          end.x,
+        ) < left ||
+        Math.min(
+          start.x,
+          end.x,
+        ) > right ||
+        Math.max(
+          start.y,
+          end.y,
+        ) < top ||
+        Math.min(
+          start.y,
+          end.y,
+        ) > bottom
+      ) {
+        return false;
+      }
+
+      const rectangleEdges = [
+        [
+          {
+            x: left,
+            y: top,
+          },
+          {
+            x: right,
+            y: top,
+          },
+        ],
+        [
+          {
+            x: right,
+            y: top,
+          },
+          {
+            x: right,
+            y: bottom,
+          },
+        ],
+        [
+          {
+            x: right,
+            y: bottom,
+          },
+          {
+            x: left,
+            y: bottom,
+          },
+        ],
+        [
+          {
+            x: left,
+            y: bottom,
+          },
+          {
+            x: left,
+            y: top,
+          },
+        ],
+      ] as const;
+
+      return rectangleEdges.some(
+        (
+          [
+            rectangleStart,
+            rectangleEnd,
+          ],
+        ) =>
+          segmentsCross(
+            start,
+            end,
+            rectangleStart,
+            rectangleEnd,
+          ),
+      );
+    }
+
+    function shiftSubtree(
+      rootNodeId: string,
+      horizontalShift: number,
+    ) {
+      if (
+        Math.abs(horizontalShift) <
+        0.01
+      ) {
+        return;
+      }
+
+      for (
+        const descendantId
+        of getDescendantIds(
+          rootNodeId,
+        )
+      ) {
+        const position =
+          getPosition(
+            descendantId,
+          );
+
+        if (!position) {
+          continue;
+        }
+
+        newPositions.set(
+          descendantId,
+          {
+            x:
+              position.x +
+              horizontalShift,
+            y:
+              position.y,
+          },
+        );
+      }
+    }
+
+    const rootCentre =
+      getNodeCentre(rootId);
+
+    for (
+      let passIndex = 0;
+      passIndex <
+        BOTTOM_UP_MAX_OVERLAP_PASSES;
+      passIndex += 1
+    ) {
+      let adjustedOverlap = false;
+
+      /*
+       * First resolve true branch-to-branch
+       * crossings. Shared endpoints and nested
+       * ancestor paths are intentionally ignored.
+       */
+      for (
+        let firstIndex = 0;
+        firstIndex <
+          structuralChildEdges.length;
+        firstIndex += 1
+      ) {
+        const firstEdge =
+          structuralChildEdges[
+            firstIndex
+          ];
+
+        const firstSegment =
+          getEdgeSegment(
+            firstEdge,
+          );
+
+        if (!firstSegment) {
+          continue;
+        }
+
+        for (
+          let secondIndex =
+            firstIndex + 1;
+          secondIndex <
+            structuralChildEdges.length;
+          secondIndex += 1
+        ) {
+          const secondEdge =
+            structuralChildEdges[
+              secondIndex
+            ];
+
+          if (
+            firstEdge.source ===
+              secondEdge.source ||
+            firstEdge.source ===
+              secondEdge.target ||
+            firstEdge.target ===
+              secondEdge.source ||
+            firstEdge.target ===
+              secondEdge.target
+          ) {
+            continue;
+          }
+
+          const firstDescendants =
+            getDescendantIds(
+              firstEdge.target,
+            );
+
+          const secondDescendants =
+            getDescendantIds(
+              secondEdge.target,
+            );
+
+          if (
+            firstDescendants.has(
+              secondEdge.target,
+            ) ||
+            secondDescendants.has(
+              firstEdge.target,
+            )
+          ) {
+            continue;
+          }
+
+          const secondSegment =
+            getEdgeSegment(
+              secondEdge,
+            );
+
+          if (
+            !secondSegment ||
+            !segmentsCross(
+              firstSegment.start,
+              firstSegment.end,
+              secondSegment.start,
+              secondSegment.end,
+            )
+          ) {
+            continue;
+          }
+
+          const firstTargetCentre =
+            getNodeCentre(
+              firstEdge.target,
+            );
+
+          const secondTargetCentre =
+            getNodeCentre(
+              secondEdge.target,
+            );
+
+          if (
+            !firstTargetCentre ||
+            !secondTargetCentre
+          ) {
+            continue;
+          }
+
+          const firstIsLeft =
+            firstTargetCentre.x <=
+            secondTargetCentre.x;
+
+          const leftEdge =
+            firstIsLeft
+              ? firstEdge
+              : secondEdge;
+
+          const rightEdge =
+            firstIsLeft
+              ? secondEdge
+              : firstEdge;
+
+          const leftCentre =
+            firstIsLeft
+              ? firstTargetCentre
+              : secondTargetCentre;
+
+          const rightCentre =
+            firstIsLeft
+              ? secondTargetCentre
+              : firstTargetCentre;
+
+          const currentSeparation =
+            rightCentre.x -
+            leftCentre.x;
+
+          const requiredShift =
+            Math.max(
+              BOTTOM_UP_OVERLAP_STEP,
+              (
+                BOTTOM_UP_OVERLAP_CLEARANCE -
+                currentSeparation
+              ) /
+                2,
+            );
+
+          shiftSubtree(
+            leftEdge.target,
+            -requiredShift,
+          );
+
+          shiftSubtree(
+            rightEdge.target,
+            requiredShift,
+          );
+
+          adjustedOverlap = true;
+          break;
+        }
+
+        if (adjustedOverlap) {
+          break;
+        }
+      }
+
+      if (adjustedOverlap) {
+        continue;
+      }
+
+      /*
+       * Then keep a branch from passing through
+       * an unrelated node box. Move only that
+       * branch's daughter subtree, and only by
+       * one small step per pass.
+       */
+      for (
+        const edge
+        of structuralChildEdges
+      ) {
+        const segment =
+          getEdgeSegment(edge);
+
+        if (!segment) {
+          continue;
+        }
+
+        const edgeDescendants =
+          getDescendantIds(
+            edge.target,
+          );
+
+        for (
+          const candidateNode
+          of layoutNodes
+        ) {
+          if (
+            candidateNode.id ===
+              edge.source ||
+            candidateNode.id ===
+              edge.target ||
+            edgeDescendants.has(
+              candidateNode.id,
+            )
+          ) {
+            continue;
+          }
+
+          const candidatePosition =
+            getPosition(
+              candidateNode.id,
+            );
+
+          if (!candidatePosition) {
+            continue;
+          }
+
+          const clearance =
+            BOTTOM_UP_OVERLAP_CLEARANCE /
+            2;
+
+          const left =
+            candidatePosition.x -
+            clearance;
+
+          const top =
+            candidatePosition.y -
+            clearance;
+
+          const right =
+            candidatePosition.x +
+            getSyntaxNodeWidth(
+              candidateNode,
+            ) +
+            clearance;
+
+          const bottom =
+            candidatePosition.y +
+            getMeasuredNodeHeight(
+              candidateNode,
+            ) +
+            clearance;
+
+          if (
+            !segmentIntersectsRectangle(
+              segment.start,
+              segment.end,
+              left,
+              top,
+              right,
+              bottom,
+            )
+          ) {
+            continue;
+          }
+
+          const targetCentre =
+            getNodeCentre(
+              edge.target,
+            );
+
+          const candidateCentre =
+            getNodeCentre(
+              candidateNode.id,
+            );
+
+          if (
+            !targetCentre ||
+            !candidateCentre
+          ) {
+            continue;
+          }
+
+          let direction =
+            targetCentre.x <
+            candidateCentre.x
+              ? -1
+              : 1;
+
+          if (
+            Math.abs(
+              targetCentre.x -
+              candidateCentre.x,
+            ) < 1 &&
+            rootCentre
+          ) {
+            direction =
+              targetCentre.x <
+              rootCentre.x
+                ? -1
+                : 1;
+          }
+
+          shiftSubtree(
+            edge.target,
+            direction *
+              BOTTOM_UP_OVERLAP_STEP,
+          );
+
+          adjustedOverlap = true;
+          break;
+        }
+
+        if (adjustedOverlap) {
+          break;
+        }
+      }
+
+      if (!adjustedOverlap) {
+        break;
+      }
+    }
+  }
+
+  resolveBottomUpOverlaps();
+
   return currentNodes.map((node) => {
     const newPosition =
       newPositions.get(node.id);
@@ -3477,6 +4232,20 @@ function isBarLevelLabel(
 ): boolean {
   return /(?:′|')$/.test(
     label.trim(),
+  );
+}
+
+function isXpLevelLabel(
+  label: string,
+): boolean {
+  const trimmedLabel =
+    label.trim();
+
+  return (
+    /P$/u.test(trimmedLabel) &&
+    !isBarLevelLabel(
+      trimmedLabel,
+    )
   );
 }
 function downloadDataUrl(
@@ -4639,7 +5408,7 @@ function createDemoTreeSession():
     ),
     createDemoNode(
       12,
-      "-Past",
+      "+Past",
       "wordInput",
       260,
       305,
@@ -5844,6 +6613,236 @@ function attachDirectly(
   setPendingBarAttachment(null);
 }
 
+function attachPhraseAsAdjunct(
+  attachment: PendingBarAttachment,
+) {
+  const lowerPhraseNode =
+    nodes.find(
+      (node) =>
+        node.id ===
+          attachment.parentId,
+    );
+
+  const adjunctNode =
+    nodes.find(
+      (node) =>
+        node.id ===
+          attachment.draggedId,
+    );
+
+  if (
+    !lowerPhraseNode ||
+    !adjunctNode ||
+    lowerPhraseNode.data.kind !==
+      "phrase" ||
+    !isXpLevelLabel(
+      lowerPhraseNode.data.label,
+    )
+  ) {
+    setPendingBarAttachment(null);
+    return;
+  }
+
+  if (
+    wouldCreateCycle(
+      lowerPhraseNode.id,
+      adjunctNode.id,
+      edges,
+    )
+  ) {
+    setPendingBarAttachment(null);
+    return;
+  }
+
+  /*
+   * XP adjunction creates a new upper copy
+   * of the target phrase:
+   *
+   *        VP
+   *       /  \
+   *   adjunct  VP
+   *
+   * This is available only through
+   * Alt+release. An ordinary release on VP
+   * retains the existing direct-attachment
+   * behaviour.
+   */
+  const incomingPhraseEdge =
+    edges.find(
+      (edge) =>
+        !isMovementEdge(edge) &&
+        edge.target ===
+          lowerPhraseNode.id,
+    );
+
+  const previousAdjunctParentEdge =
+    edges.find(
+      (edge) =>
+        !isMovementEdge(edge) &&
+        edge.target ===
+          adjunctNode.id,
+    );
+
+  const newUpperPhraseId =
+    `syntax-node-${nextNodeNumber.current}`;
+
+  nextNodeNumber.current += 1;
+
+  const newUpperPhraseNode:
+    SyntaxNode = {
+    id: newUpperPhraseId,
+    type: "syntaxNode",
+    position: {
+      ...lowerPhraseNode.position,
+    },
+    data: {
+      ...lowerPhraseNode.data,
+      kind: "phrase",
+      isLowerCopy: false,
+    },
+  };
+
+  let updatedEdges =
+    edges.filter((edge) => {
+      if (
+        !isMovementEdge(edge) &&
+        edge.target ===
+          adjunctNode.id
+      ) {
+        return false;
+      }
+
+      if (
+        incomingPhraseEdge &&
+        edge.id ===
+          incomingPhraseEdge.id
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+
+  if (incomingPhraseEdge) {
+    updatedEdges = addEdge(
+      {
+        id:
+          `edge-${incomingPhraseEdge.source}-${newUpperPhraseId}`,
+        source:
+          incomingPhraseEdge.source,
+        target:
+          newUpperPhraseId,
+        type: "tree",
+        data: {
+          edgeKind: "tree",
+          siblingOrder:
+            getSiblingOrder(
+              incomingPhraseEdge,
+            ),
+        },
+      },
+      updatedEdges,
+    );
+  }
+
+  const leftDaughterId =
+    attachment.placeOnLeft
+      ? adjunctNode.id
+      : lowerPhraseNode.id;
+
+  const rightDaughterId =
+    attachment.placeOnLeft
+      ? lowerPhraseNode.id
+      : adjunctNode.id;
+
+  updatedEdges = addEdge(
+    {
+      id:
+        `edge-${newUpperPhraseId}-${leftDaughterId}`,
+      source:
+        newUpperPhraseId,
+      target:
+        leftDaughterId,
+      type: "tree",
+      data: {
+        edgeKind: "tree",
+        siblingOrder: 0,
+      },
+    },
+    updatedEdges,
+  );
+
+  updatedEdges = addEdge(
+    {
+      id:
+        `edge-${newUpperPhraseId}-${rightDaughterId}`,
+      source:
+        newUpperPhraseId,
+      target:
+        rightDaughterId,
+      type: "tree",
+      data: {
+        edgeKind: "tree",
+        siblingOrder: 1,
+      },
+    },
+    updatedEdges,
+  );
+
+  const nodeSnapshot:
+    SyntaxNode[] = [
+    ...nodes.map((node) => {
+      if (
+        node.id !==
+          adjunctNode.id
+      ) {
+        return node;
+      }
+
+      return {
+        ...node,
+        position: {
+          ...attachment
+            .draggedPosition,
+        },
+      };
+    }),
+    newUpperPhraseNode,
+  ];
+
+  let balancedNodes =
+    layoutTreeComponent(
+      nodeSnapshot,
+      updatedEdges,
+      newUpperPhraseId,
+      showNodeBoxes,
+      showHeadWordLines,
+      treeLayoutMode,
+      collapseUnusedBarLevels,
+    );
+
+  if (
+    previousAdjunctParentEdge &&
+    previousAdjunctParentEdge.source !==
+      lowerPhraseNode.id
+  ) {
+    balancedNodes =
+      layoutTreeComponent(
+        balancedNodes,
+        updatedEdges,
+        previousAdjunctParentEdge.source,
+        showNodeBoxes,
+        showHeadWordLines,
+        treeLayoutMode,
+        collapseUnusedBarLevels,
+      );
+  }
+
+  setEdges(updatedEdges);
+  setNodes(balancedNodes);
+  setPendingBarAttachment(null);
+}
+
 function attachAsAdjunct(
   attachment: PendingBarAttachment,
 ) {
@@ -7028,6 +8027,21 @@ const handleNodeDragStop:
       },
     };
 
+    if (
+      event.altKey &&
+      parentNode.data.kind ===
+        "phrase" &&
+      isXpLevelLabel(
+        parentNode.data.label,
+      )
+    ) {
+      attachPhraseAsAdjunct(
+        attachment,
+      );
+
+      return;
+    }
+
     const previousParentEdge =
       edges.find(
         (edge) =>
@@ -7327,6 +8341,182 @@ function attachCreatedHeadAsAdjunct(
 
   setNodes(balancedNodes);
   setEdges(updatedEdges);
+}
+
+  function attachCreatedPhraseAsAdjunct(
+  lowerPhraseNode: SyntaxNode,
+  draggedRootId: string,
+  createdNodes: SyntaxNode[],
+  createdEdges: Edge[],
+  placeOnLeft: boolean,
+  draggedPosition: {
+    x: number;
+    y: number;
+  },
+) {
+  const draggedRootNode =
+    createdNodes.find(
+      (node) =>
+        node.id ===
+          draggedRootId,
+    );
+
+  if (
+    !draggedRootNode ||
+    lowerPhraseNode.data.kind !==
+      "phrase" ||
+    !isXpLevelLabel(
+      lowerPhraseNode.data.label,
+    )
+  ) {
+    attachCreatedSubtreeDirectly(
+      lowerPhraseNode,
+      draggedRootId,
+      createdNodes,
+      createdEdges,
+      placeOnLeft,
+      draggedPosition,
+    );
+
+    return;
+  }
+
+  const incomingPhraseEdge =
+    edges.find(
+      (edge) =>
+        !isMovementEdge(edge) &&
+        edge.target ===
+          lowerPhraseNode.id,
+    );
+
+  const newUpperPhraseId =
+    `syntax-node-${nextNodeNumber.current}`;
+
+  nextNodeNumber.current += 1;
+
+  const newUpperPhraseNode:
+    SyntaxNode = {
+    id: newUpperPhraseId,
+    type: "syntaxNode",
+    position: {
+      ...lowerPhraseNode.position,
+    },
+    data: {
+      ...lowerPhraseNode.data,
+      kind: "phrase",
+      isLowerCopy: false,
+    },
+  };
+
+  const nodeSnapshot = [
+    ...nodes,
+    ...createdNodes,
+    newUpperPhraseNode,
+  ].map((node) => {
+    if (
+      node.id !== draggedRootId
+    ) {
+      return node;
+    }
+
+    return {
+      ...node,
+      position: {
+        ...draggedPosition,
+      },
+    };
+  });
+
+  let updatedEdges = [
+    ...edges,
+    ...createdEdges,
+  ].filter(
+    (edge) =>
+      !incomingPhraseEdge ||
+      edge.id !==
+        incomingPhraseEdge.id,
+  );
+
+  if (incomingPhraseEdge) {
+    updatedEdges = addEdge(
+      {
+        id:
+          `edge-${incomingPhraseEdge.source}-${newUpperPhraseId}`,
+        source:
+          incomingPhraseEdge.source,
+        target:
+          newUpperPhraseId,
+        type: "tree",
+        data: {
+          edgeKind: "tree",
+          siblingOrder:
+            getSiblingOrder(
+              incomingPhraseEdge,
+            ),
+        },
+      },
+      updatedEdges,
+    );
+  }
+
+  const leftDaughterId =
+    placeOnLeft
+      ? draggedRootId
+      : lowerPhraseNode.id;
+
+  const rightDaughterId =
+    placeOnLeft
+      ? lowerPhraseNode.id
+      : draggedRootId;
+
+  updatedEdges = addEdge(
+    {
+      id:
+        `edge-${newUpperPhraseId}-${leftDaughterId}`,
+      source:
+        newUpperPhraseId,
+      target:
+        leftDaughterId,
+      type: "tree",
+      data: {
+        edgeKind: "tree",
+        siblingOrder: 0,
+      },
+    },
+    updatedEdges,
+  );
+
+  updatedEdges = addEdge(
+    {
+      id:
+        `edge-${newUpperPhraseId}-${rightDaughterId}`,
+      source:
+        newUpperPhraseId,
+      target:
+        rightDaughterId,
+      type: "tree",
+      data: {
+        edgeKind: "tree",
+        siblingOrder: 1,
+      },
+    },
+    updatedEdges,
+  );
+
+  const balancedNodes =
+    layoutTreeComponent(
+      nodeSnapshot,
+      updatedEdges,
+      newUpperPhraseId,
+      showNodeBoxes,
+      showHeadWordLines,
+      treeLayoutMode,
+      collapseUnusedBarLevels,
+    );
+
+  setNodes(balancedNodes);
+  setEdges(updatedEdges);
+  setPendingBarAttachment(null);
 }
 
   function attachCreatedSubtreeAsAdjunct(
@@ -7919,6 +9109,35 @@ function attachCreatedHeadAsAdjunct(
         "head"
     ) {
       attachCreatedHeadAsAdjunct(
+        targetNode,
+        draggedRootId,
+        createdNodes,
+        createdEdges,
+        placeOnLeft,
+        draggedPosition,
+      );
+
+      return;
+    }
+
+    /*
+     * Alt+release on a maximal phrase such
+     * as VP, NP, DP, TP, or CP creates XP
+     * adjunction by doubling that XP layer.
+     *
+     * No pop-up is used for XP adjunction.
+     * Releasing without Alt retains the
+     * existing direct-attachment behaviour.
+     */
+    if (
+      event.altKey &&
+      targetNode.data.kind ===
+        "phrase" &&
+      isXpLevelLabel(
+        targetNode.data.label,
+      )
+    ) {
+      attachCreatedPhraseAsAdjunct(
         targetNode,
         draggedRootId,
         createdNodes,
@@ -8887,6 +10106,21 @@ function exportTreeAsLatex() {
       </li>
 
       <li>
+        Hold Alt while releasing on VP or
+        another XP level to create XP
+        adjunction. A new copy of that XP
+        is created above the existing XP.
+      </li>
+
+      <li>
+        XP adjunction is available only
+        through Alt+release. It never opens
+        a pop-up. Releasing without Alt
+        keeps the existing direct-attachment
+        behaviour.
+      </li>
+
+      <li>
         A complement becomes a direct
         daughter of the existing X′ and
         a sister of the head.
@@ -9135,6 +10369,15 @@ function exportTreeAsLatex() {
         on one shared terminal row and
         staggers the remaining structure
         upward from those words.
+      </li>
+
+      <li>
+        Bottom-up mode begins with compact
+        spacing, then detects actual branch
+        crossings and branch-through-node
+        overlaps. Only the affected daughter
+        subtrees are shifted, using the
+        smallest repeated adjustment needed.
       </li>
 
       <li>
@@ -9799,6 +11042,10 @@ function exportTreeAsLatex() {
 
     <span>
       Alt + release: Adjunct
+    </span>
+
+    <span>
+      Alt on XP: double XP
     </span>
 
     <span
