@@ -52,6 +52,10 @@ type TreeLayoutMode =
   | "topDown"
   | "bottomUp";
 
+type StructuralEdgeShape =
+  | "line"
+  | "triangle";
+
 interface TreeTextColorPreset {
   id: string;
   label: string;
@@ -10424,8 +10428,14 @@ function attachCreatedHeadAsAdjunct(
       await toPng(
         viewportElement,
         {
+          /*
+           * Keep the exported PNG background
+           * transparent. Tree labels, branches,
+           * triangles, and movement arrows remain
+           * visible, but no white canvas is added.
+           */
           backgroundColor:
-            "#ffffff",
+            "transparent",
 
           width: imageWidth,
           height: imageHeight,
