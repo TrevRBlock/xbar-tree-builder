@@ -52,10 +52,6 @@ type TreeLayoutMode =
   | "topDown"
   | "bottomUp";
 
-type StructuralEdgeShape =
-  | "line"
-  | "triangle";
-
 interface TreeTextColorPreset {
   id: string;
   label: string;
