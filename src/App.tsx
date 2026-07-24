@@ -8,6 +8,7 @@ import {
   useState,
   type CSSProperties,
   type DragEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 
 import { toPng } from "html-to-image";
@@ -51,6 +52,104 @@ type TreeLayoutMode =
   | "topDown"
   | "bottomUp";
 
+type StructuralEdgeShape =
+  | "line"
+  | "triangle";
+
+interface TreeTextColorPreset {
+  id: string;
+  label: string;
+  nodeColor: string;
+  lexicalColor: string;
+}
+
+const DEFAULT_NODE_TEXT_COLOR =
+  "#111827";
+
+const DEFAULT_LEXICAL_TEXT_COLOR =
+  "#111827";
+
+const TREE_TEXT_COLOR_PRESETS:
+  readonly TreeTextColorPreset[] = [
+  {
+    id: "black-black",
+    label: "Black nodes / black lexical",
+    nodeColor: "#111827",
+    lexicalColor: "#111827",
+  },
+  {
+    id: "blue-green",
+    label: "Blue nodes / green lexical",
+    nodeColor: "#1d4ed8",
+    lexicalColor: "#15803d",
+  },
+  {
+    id: "black-green",
+    label: "Black nodes / green lexical",
+    nodeColor: "#111827",
+    lexicalColor: "#15803d",
+  },
+  {
+    id: "black-blue",
+    label: "Black nodes / blue lexical",
+    nodeColor: "#111827",
+    lexicalColor: "#1d4ed8",
+  },
+  {
+    id: "purple-green",
+    label: "Purple nodes / green lexical",
+    nodeColor: "#7e22ce",
+    lexicalColor: "#15803d",
+  },
+  {
+    id: "blue-red",
+    label: "Blue nodes / red lexical",
+    nodeColor: "#1d4ed8",
+    lexicalColor: "#b91c1c",
+  },
+];
+
+function isLexicalNodeKind(
+  kind: NodeKind,
+): boolean {
+  return (
+    kind === "word" ||
+    kind === "wordInput" ||
+    kind === "movementSummary"
+  );
+}
+
+function normalizeHexColor(
+  value: string,
+  fallback: string,
+): string {
+  const normalizedValue =
+    value.trim();
+
+  return /^#[0-9a-f]{6}$/iu.test(
+    normalizedValue,
+  )
+    ? normalizedValue.toLowerCase()
+    : fallback;
+}
+
+function getTreeTextColorPresetId(
+  nodeColor: string,
+  lexicalColor: string,
+): string {
+  const matchingPreset =
+    TREE_TEXT_COLOR_PRESETS.find(
+      (preset) =>
+        preset.nodeColor.toLowerCase() ===
+          nodeColor.toLowerCase() &&
+        preset.lexicalColor.toLowerCase() ===
+          lexicalColor.toLowerCase(),
+    );
+
+  return matchingPreset?.id ??
+    "custom";
+}
+
 interface SyntaxNodeData
   extends Record<string, unknown> {
   label: string;
@@ -59,6 +158,15 @@ interface SyntaxNodeData
   textBold?: boolean;
   textItalic?: boolean;
   textStrikethrough?: boolean;
+  textSubscript?: string;
+
+  /*
+   * Movement summaries use these IDs to
+   * mirror edits made to the lexical nodes
+   * in the pronounced higher copy.
+   */
+  movementLinkedLexicalNodeIds?:
+    string[];
 }
 
 type TextFormatKey =
@@ -99,9 +207,18 @@ type SyntaxNode = Node<
   "syntaxNode"
 >;
 
+type ProjectionChain =
+  readonly [
+    phrase: string,
+    intermediate: string,
+    head: string,
+  ];
+
 interface PaletteItem {
   label: string;
   kind: NodeKind;
+  projectionChain?:
+    ProjectionChain;
 }
 
 type MaximalProjection =
@@ -126,11 +243,7 @@ type MaximalProjection =
 
 const projectionChains: Record<
   MaximalProjection,
-  readonly [
-    phrase: string,
-    intermediate: string,
-    head: string,
-  ]
+  ProjectionChain
 > = {
   AdjP: ["AdjP", "Adj′", "Adj"],
   AdvP: ["AdvP", "Adv′", "Adv"],
@@ -159,6 +272,90 @@ function isMaximalProjection(
     projectionChains,
     label,
   );
+}
+
+function normalizeCustomProjectionLabel(
+  value: string,
+): string | null {
+  const normalizedWhitespace =
+    value
+      .trim()
+      .replace(/\s+/gu, " ");
+
+  if (!normalizedWhitespace) {
+    return null;
+  }
+
+  const phraseLabel =
+    normalizedWhitespace.endsWith(
+      "P",
+    )
+      ? normalizedWhitespace
+      : `${normalizedWhitespace}P`;
+
+  const headLabel =
+    phraseLabel
+      .slice(0, -1)
+      .trim();
+
+  if (!headLabel) {
+    return null;
+  }
+
+  return phraseLabel;
+}
+
+function createCustomProjectionChain(
+  phraseLabel: string,
+): ProjectionChain {
+  const headLabel =
+    phraseLabel
+      .slice(0, -1)
+      .trim();
+
+  return [
+    phraseLabel,
+    `${headLabel}′`,
+    headLabel,
+  ];
+}
+
+function getProjectionChainForPaletteItem(
+  item: PaletteItem,
+): ProjectionChain | null {
+  if (item.kind !== "phrase") {
+    return null;
+  }
+
+  const suppliedChain =
+    item.projectionChain;
+
+  if (
+    Array.isArray(suppliedChain) &&
+    suppliedChain.length === 3 &&
+    suppliedChain.every(
+      (label) =>
+        typeof label === "string",
+    )
+  ) {
+    return [
+      suppliedChain[0],
+      suppliedChain[1],
+      suppliedChain[2],
+    ];
+  }
+
+  if (
+    isMaximalProjection(
+      item.label,
+    )
+  ) {
+    return projectionChains[
+      item.label
+    ];
+  }
+
+  return null;
 }
 
 function getDefaultLexicalLabelForHead(
@@ -241,6 +438,8 @@ interface DisplayOptionsContextValue {
   showHeadWordLines: boolean;
   collapseUnusedBarLevels: boolean;
   treeLayoutMode: TreeLayoutMode;
+  nodeTextColor: string;
+  lexicalTextColor: string;
   requestAutoBalance: () => void;
 }
 
@@ -251,6 +450,10 @@ const DisplayOptionsContext =
     showHeadWordLines: true,
     collapseUnusedBarLevels: false,
     treeLayoutMode: "topDown",
+    nodeTextColor:
+      DEFAULT_NODE_TEXT_COLOR,
+    lexicalTextColor:
+      DEFAULT_LEXICAL_TEXT_COLOR,
     requestAutoBalance: () => {},
   });
 
@@ -586,6 +789,8 @@ function SyntaxNodeComponent({
 
   const {
     showNodeBoxes,
+    nodeTextColor,
+    lexicalTextColor,
     requestAutoBalance,
   } = useContext(
     DisplayOptionsContext,
@@ -614,6 +819,16 @@ function SyntaxNodeComponent({
       .replace(/\r\n?/g, "\n")
       .split("\n");
 
+  const subscriptText =
+    data.textSubscript ?? "";
+
+  const subscriptDisplayWidth =
+    Math.ceil(
+      Array.from(
+        subscriptText,
+      ).length * 0.7,
+    );
+
   const longestLabelLineLength =
     Math.max(
       1,
@@ -621,9 +836,16 @@ function SyntaxNodeComponent({
         (line) =>
           Array.from(line).length,
       ),
-    );
+    ) +
+    subscriptDisplayWidth;
 
   const nodeTextStyle: CSSProperties = {
+    color:
+      isLexicalNodeKind(
+        data.kind,
+      )
+        ? lexicalTextColor
+        : nodeTextColor,
     fontWeight:
       isNodeTextBold(data)
         ? 700
@@ -643,6 +865,14 @@ function SyntaxNodeComponent({
     whiteSpace: "pre",
     textAlign: "center",
     lineHeight: 1.2,
+  };
+
+  const subscriptStyle:
+    CSSProperties = {
+    fontSize: "0.72em",
+    verticalAlign: "sub",
+    lineHeight: 0,
+    marginLeft: 1,
   };
 
   const summaryWidth =
@@ -718,6 +948,7 @@ function SyntaxNodeComponent({
     data.textBold,
     data.textItalic,
     data.textStrikethrough,
+    data.textSubscript,
     id,
     isEditing,
     showNodeBoxes,
@@ -872,8 +1103,21 @@ function SyntaxNodeComponent({
                 : undefined
             }
           >
-            <span className="movement-summary-words">
+            <span
+              className="movement-summary-words"
+              style={nodeTextStyle}
+            >
               {data.label || "\u00A0"}
+
+              {subscriptText && (
+                <sub
+                  style={
+                    subscriptStyle
+                  }
+                >
+                  {subscriptText}
+                </sub>
+              )}
             </span>
           </span>
         </div>
@@ -890,6 +1134,16 @@ function SyntaxNodeComponent({
             style={nodeTextStyle}
           >
             {data.label || "\u00A0"}
+
+            {subscriptText && (
+              <sub
+                style={
+                  subscriptStyle
+                }
+              >
+                {subscriptText}
+              </sub>
+            )}
           </span>
 
           <textarea
@@ -1023,6 +1277,17 @@ function SyntaxNodeComponent({
               }
             }}
           />
+
+          {subscriptText && (
+            <sub
+              aria-label={`Subscript ${subscriptText}`}
+              style={
+                subscriptStyle
+              }
+            >
+              {subscriptText}
+            </sub>
+          )}
         </span>
       ) : (
         <span
@@ -1030,6 +1295,16 @@ function SyntaxNodeComponent({
           style={nodeTextStyle}
         >
           {data.label || "\u00A0"}
+
+          {subscriptText && (
+            <sub
+              style={
+                subscriptStyle
+              }
+            >
+              {subscriptText}
+            </sub>
+          )}
         </span>
       )}
 
@@ -1105,21 +1380,66 @@ function TreeEdge({
   targetX,
   targetY,
   markerEnd,
+  data,
+  selected,
 }: EdgeProps) {
-  const treePath = [
-    `M ${sourceX},${sourceY}`,
-    `L ${targetX},${targetY}`,
-  ].join(" ");
+  const edgeShape =
+    data?.edgeShape ===
+      "triangle"
+      ? "triangle"
+      : "line";
+
+  const verticalDistance =
+    Math.abs(
+      targetY - sourceY,
+    );
+
+  const triangleHalfWidth =
+    Math.max(
+      28,
+      Math.min(
+        52,
+        verticalDistance * 0.42,
+      ),
+    );
+
+  const treePath =
+    edgeShape === "triangle"
+      ? [
+          `M ${sourceX},${sourceY}`,
+          `L ${targetX - triangleHalfWidth},${targetY}`,
+          `L ${targetX + triangleHalfWidth},${targetY}`,
+          "Z",
+        ].join(" ")
+      : [
+          `M ${sourceX},${sourceY}`,
+          `L ${targetX},${targetY}`,
+        ].join(" ");
 
   return (
     <BaseEdge
       id={id}
       path={treePath}
       markerEnd={markerEnd}
-      interactionWidth={16}
-      className="tree-edge-path"
+      interactionWidth={
+        edgeShape === "triangle"
+          ? 22
+          : 16
+      }
+      className={[
+        "tree-edge-path",
+        edgeShape === "triangle"
+          ? "triangle-tree-edge-path"
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       style={{
-        stroke: "#20242a",
+        fill: "none",
+        stroke:
+          selected
+            ? "#2563eb"
+            : "#20242a",
         strokeWidth:
           TREE_EDGE_STROKE_WIDTH,
         strokeLinecap: "round",
@@ -2022,6 +2342,142 @@ function getLexicalHeadTerminalId(
   );
 }
 
+function getLexicalNodeIdsInYieldOrder(
+  rootNodeId: string,
+  currentNodes: readonly SyntaxNode[],
+  currentEdges: readonly Edge[],
+): string[] {
+  const nodeById =
+    new Map(
+      currentNodes.map(
+        (node) => [
+          node.id,
+          node,
+        ],
+      ),
+    );
+
+  const childEdgesByParent =
+    new Map<string, Edge[]>();
+
+  for (const edge of currentEdges) {
+    if (isMovementEdge(edge)) {
+      continue;
+    }
+
+    const childEdges =
+      childEdgesByParent.get(
+        edge.source,
+      ) ?? [];
+
+    childEdgesByParent.set(
+      edge.source,
+      [
+        ...childEdges,
+        edge,
+      ],
+    );
+  }
+
+  for (
+    const childEdges
+    of childEdgesByParent.values()
+  ) {
+    childEdges.sort(
+      (
+        firstEdge,
+        secondEdge,
+      ) => {
+        const orderDifference =
+          getSiblingOrder(
+            firstEdge,
+          ) -
+          getSiblingOrder(
+            secondEdge,
+          );
+
+        if (orderDifference !== 0) {
+          return orderDifference;
+        }
+
+        const firstNode =
+          nodeById.get(
+            firstEdge.target,
+          );
+
+        const secondNode =
+          nodeById.get(
+            secondEdge.target,
+          );
+
+        return (
+          (
+            firstNode?.position.x ??
+            0
+          ) -
+          (
+            secondNode?.position.x ??
+            0
+          )
+        );
+      },
+    );
+  }
+
+  const lexicalNodeIds:
+    string[] = [];
+
+  const activeNodeIds =
+    new Set<string>();
+
+  function collectLexicalNodeIds(
+    nodeId: string,
+  ) {
+    if (
+      activeNodeIds.has(nodeId)
+    ) {
+      return;
+    }
+
+    activeNodeIds.add(nodeId);
+
+    const node =
+      nodeById.get(nodeId);
+
+    if (!node) {
+      activeNodeIds.delete(nodeId);
+      return;
+    }
+
+    if (
+      node.data.kind === "word" ||
+      node.data.kind === "wordInput"
+    ) {
+      lexicalNodeIds.push(node.id);
+
+      activeNodeIds.delete(nodeId);
+      return;
+    }
+
+    const childEdges =
+      childEdgesByParent.get(
+        nodeId,
+      ) ?? [];
+
+    for (const childEdge of childEdges) {
+      collectLexicalNodeIds(
+        childEdge.target,
+      );
+    }
+
+    activeNodeIds.delete(nodeId);
+  }
+
+  collectLexicalNodeIds(rootNodeId);
+
+  return lexicalNodeIds;
+}
+
 function getLexicalYield(
   rootNodeId: string,
   currentNodes: readonly SyntaxNode[],
@@ -2266,6 +2722,11 @@ function getSyntaxNodeWidth(
       .replace(/\r\n?/g, "\n")
       .split("\n");
 
+  const subscriptCharacterCount =
+    Array.from(
+      node.data.textSubscript ?? "",
+    ).length;
+
   const characterCount =
     Math.max(
       1,
@@ -2273,6 +2734,9 @@ function getSyntaxNodeWidth(
         (line) =>
           Array.from(line).length,
       ),
+    ) +
+    Math.ceil(
+      subscriptCharacterCount * 0.7,
     );
 
   if (
@@ -2542,6 +3006,13 @@ function createCollapsedBarStructure(
                   : daughterIndex,
               collapsedBarNodeId:
                 nodeId,
+              originalEdgeId:
+                typeof incomingEdge.data
+                  ?.originalEdgeId ===
+                  "string"
+                  ? incomingEdge.data
+                      .originalEdgeId
+                  : incomingEdge.id,
             },
           }),
         );
@@ -4378,12 +4849,27 @@ function formatLatexNodeLabel(
       return formattedLine;
     });
 
-  if (formattedLines.length === 1) {
-    return formattedLines[0];
+  const formattedLabel =
+    formattedLines.length === 1
+      ? formattedLines[0]
+      : `\\shortstack{${formattedLines.join(
+          "\\\\",
+        )}}`;
+
+  const normalizedSubscript =
+    (
+      data.textSubscript ?? ""
+    )
+      .replace(/\r\n?/g, " ")
+      .replace(/\n/g, " ")
+      .trim();
+
+  if (!normalizedSubscript) {
+    return formattedLabel;
   }
 
-  return `\\shortstack{${formattedLines.join(
-    "\\\\",
+  return `${formattedLabel}\\textsubscript{${escapeLatexText(
+    normalizedSubscript,
   )}}`;
 }
 
@@ -4419,6 +4905,8 @@ function createLatexDocument(
   showNodeBoxes: boolean,
   showMovementArrows: boolean,
   showHeadWordLines: boolean,
+  nodeTextColor: string,
+  lexicalTextColor: string,
 ): string {
   if (
     currentNodes.length === 0
@@ -4427,6 +4915,22 @@ function createLatexDocument(
       "The canvas does not contain any nodes.",
     );
   }
+
+  const latexNodeTextHex =
+    normalizeHexColor(
+      nodeTextColor,
+      DEFAULT_NODE_TEXT_COLOR,
+    )
+      .slice(1)
+      .toUpperCase();
+
+  const latexLexicalTextHex =
+    normalizeHexColor(
+      lexicalTextColor,
+      DEFAULT_LEXICAL_TEXT_COLOR,
+    )
+      .slice(1)
+      .toUpperCase();
 
   const nodeById = new Map(
     currentNodes.map((node) => [
@@ -4813,6 +5317,45 @@ function createLatexDocument(
             edge.target,
           );
 
+        if (
+          edge.data?.edgeShape ===
+            "triangle"
+        ) {
+          const targetNode =
+            nodeById.get(
+              edge.target,
+            );
+
+          const triangleHalfWidth =
+            targetNode
+              ? Math.max(
+                  0.55,
+                  Math.min(
+                    1.45,
+                    getNodeWidth(
+                      targetNode,
+                    ) *
+                      coordinateScale /
+                      2,
+                  ),
+                )
+              : 0.8;
+
+          return [
+            "\\draw[tree edge]",
+            `(${sourceName}.south)`,
+            "--",
+            `($(${targetName}.north)+(-${formatLatexNumber(
+              triangleHalfWidth,
+            )},0)$)`,
+            "--",
+            `($(${targetName}.north)+(${formatLatexNumber(
+              triangleHalfWidth,
+            )},0)$)`,
+            "-- cycle;",
+          ].join(" ");
+        }
+
         return [
           "\\draw[tree edge]",
           `(${sourceName}.south)`,
@@ -4899,9 +5442,12 @@ function createLatexDocument(
     "\\definecolor{xbarpurple}{HTML}{7A55B6}",
     "\\definecolor{xbaryellow}{HTML}{B18A22}",
     "\\definecolor{xbarmovement}{HTML}{9B2F43}",
+    `\\definecolor{xbarnodetext}{HTML}{${latexNodeTextHex}}`,
+    `\\definecolor{xbarlexicaltext}{HTML}{${latexLexicalTextHex}}`,
     "",
     "\\tikzset{",
     "  syntax phrase/.style={",
+    "    text=xbarnodetext,",
     "    draw=xbarblue,",
     "    fill=xbarblue!7,",
     "    rounded corners=2pt,",
@@ -4910,6 +5456,7 @@ function createLatexDocument(
     "    inner ysep=3pt,",
     "  },",
     "  syntax head/.style={",
+    "    text=xbarnodetext,",
     "    draw=xbarpurple,",
     "    fill=xbarpurple!7,",
     "    rounded corners=2pt,",
@@ -4918,6 +5465,7 @@ function createLatexDocument(
     "    inner ysep=3pt,",
     "  },",
     "  syntax word/.style={",
+    "    text=xbarlexicaltext,",
     "    draw=xbaryellow,",
     "    fill=xbaryellow!7,",
     "    rounded corners=2pt,",
@@ -4926,18 +5474,21 @@ function createLatexDocument(
     "    inner ysep=3pt,",
     "  },",
     "  syntax phrase plain/.style={",
+    "    text=xbarnodetext,",
     "    draw=none,",
     "    fill=none,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
     "  },",
     "  syntax head plain/.style={",
+    "    text=xbarnodetext,",
     "    draw=none,",
     "    fill=none,",
     "    inner xsep=5pt,",
     "    inner ysep=3pt,",
     "  },",
     "  syntax word plain/.style={",
+    "    text=xbarlexicaltext,",
     "    draw=none,",
     "    fill=none,",
     "    inner xsep=5pt,",
@@ -5084,6 +5635,126 @@ const TREE_LAYOUT_MODE_STORAGE_KEY =
 
 const COLLAPSE_UNUSED_BAR_LEVELS_STORAGE_KEY =
   "xbar-tree-builder-collapse-unused-bars-v1";
+
+const NODE_TEXT_COLOR_STORAGE_KEY =
+  "xbar-tree-builder-node-text-color-v1";
+
+const LEXICAL_TEXT_COLOR_STORAGE_KEY =
+  "xbar-tree-builder-lexical-text-color-v1";
+
+const CUSTOM_PROJECTION_LABELS_STORAGE_KEY =
+  "xbar-tree-builder-custom-projections-v1";
+
+function loadCustomProjectionLabels():
+  string[] {
+  if (
+    typeof window === "undefined"
+  ) {
+    return [];
+  }
+
+  try {
+    const savedValue =
+      window.localStorage.getItem(
+        CUSTOM_PROJECTION_LABELS_STORAGE_KEY,
+      );
+
+    if (!savedValue) {
+      return [];
+    }
+
+    const parsedValue =
+      JSON.parse(savedValue);
+
+    if (!Array.isArray(parsedValue)) {
+      return [];
+    }
+
+    const builtInLabels =
+      new Set(
+        phraseLabels.map(
+          (item) =>
+            item.label.toLowerCase(),
+        ),
+      );
+
+    const restoredLabels:
+      string[] = [];
+
+    const restoredLowercaseLabels =
+      new Set<string>();
+
+    for (
+      const savedLabel
+      of parsedValue
+    ) {
+      if (
+        typeof savedLabel !==
+          "string"
+      ) {
+        continue;
+      }
+
+      const normalizedLabel =
+        normalizeCustomProjectionLabel(
+          savedLabel,
+        );
+
+      if (!normalizedLabel) {
+        continue;
+      }
+
+      const lowercaseLabel =
+        normalizedLabel
+          .toLowerCase();
+
+      if (
+        builtInLabels.has(
+          lowercaseLabel,
+        ) ||
+        restoredLowercaseLabels.has(
+          lowercaseLabel,
+        )
+      ) {
+        continue;
+      }
+
+      restoredLabels.push(
+        normalizedLabel,
+      );
+
+      restoredLowercaseLabels.add(
+        lowercaseLabel,
+      );
+    }
+
+    return restoredLabels;
+  } catch {
+    return [];
+  }
+}
+
+function loadStoredTextColor(
+  storageKey: string,
+  fallback: string,
+): string {
+  if (
+    typeof window === "undefined"
+  ) {
+    return fallback;
+  }
+
+  try {
+    return normalizeHexColor(
+      window.localStorage.getItem(
+        storageKey,
+      ) ?? fallback,
+      fallback,
+    );
+  } catch {
+    return fallback;
+  }
+}
 
 function loadShowNodeBoxes(): boolean {
   if (
@@ -5981,6 +6652,38 @@ const [
   setSelectionBoxActive,
 ] = useState(false);
 
+const [
+  customProjectionInput,
+  setCustomProjectionInput,
+] = useState("");
+
+const [
+  customProjectionLabels,
+  setCustomProjectionLabels,
+] = useState<string[]>(
+  loadCustomProjectionLabels,
+);
+
+const [
+  nodeTextColor,
+  setNodeTextColor,
+] = useState<string>(() =>
+  loadStoredTextColor(
+    NODE_TEXT_COLOR_STORAGE_KEY,
+    DEFAULT_NODE_TEXT_COLOR,
+  ),
+);
+
+const [
+  lexicalTextColor,
+  setLexicalTextColor,
+] = useState<string>(() =>
+  loadStoredTextColor(
+    LEXICAL_TEXT_COLOR_STORAGE_KEY,
+    DEFAULT_LEXICAL_TEXT_COLOR,
+  ),
+);
+
 useEffect(() => {
   try {
     window.localStorage.setItem(
@@ -6052,6 +6755,50 @@ useEffect(() => {
     );
   }
 }, [collapseUnusedBarLevels]);
+
+useEffect(() => {
+  try {
+    window.localStorage.setItem(
+      CUSTOM_PROJECTION_LABELS_STORAGE_KEY,
+      JSON.stringify(
+        customProjectionLabels,
+      ),
+    );
+  } catch (error) {
+    console.error(
+      "The custom phrase labels could not be saved.",
+      error,
+    );
+  }
+}, [customProjectionLabels]);
+
+useEffect(() => {
+  try {
+    window.localStorage.setItem(
+      NODE_TEXT_COLOR_STORAGE_KEY,
+      nodeTextColor,
+    );
+  } catch (error) {
+    console.error(
+      "The node text colour could not be saved.",
+      error,
+    );
+  }
+}, [nodeTextColor]);
+
+useEffect(() => {
+  try {
+    window.localStorage.setItem(
+      LEXICAL_TEXT_COLOR_STORAGE_KEY,
+      lexicalTextColor,
+    );
+  } catch (error) {
+    console.error(
+      "The lexical text colour could not be saved.",
+      error,
+    );
+  }
+}, [lexicalTextColor]);
 
 const autoBalanceFrameRef =
   useRef<number | null>(null);
@@ -6275,6 +7022,153 @@ useEffect(() => {
   collapseUnusedBarLevels,
   showNodeBoxes,
   treeLayoutMode,
+]);
+
+/*
+ * Condensed lower copies mirror the editable
+ * lexical material in their higher moved copy.
+ *
+ * The signature only tracks linked lexical
+ * content and the summary's strikeout flag, so
+ * updating the summary does not create a loop.
+ */
+const movementSummarySyncSignature =
+  nodes
+    .filter(
+      (node) =>
+        node.data.kind ===
+          "movementSummary",
+    )
+    .map((summaryNode) => {
+      const linkedNodeIds =
+        Array.isArray(
+          summaryNode.data
+            .movementLinkedLexicalNodeIds,
+        )
+          ? summaryNode.data
+              .movementLinkedLexicalNodeIds
+          : [];
+
+      const linkedLabels =
+        linkedNodeIds.map(
+          (linkedNodeId) => {
+            const linkedNode =
+              nodes.find(
+                (node) =>
+                  node.id ===
+                    linkedNodeId,
+              );
+
+            return [
+              linkedNodeId,
+              linkedNode?.data.label ??
+                "",
+              linkedNode?.data
+                .textSubscript ??
+                "",
+            ].join(":");
+          },
+        );
+
+      return [
+        summaryNode.id,
+        Boolean(
+          summaryNode.data
+            .textStrikethrough,
+        ),
+        ...linkedLabels,
+      ].join("|");
+    })
+    .join("||");
+
+useEffect(() => {
+  let summaryChanged = false;
+
+  setNodes((currentNodes) => {
+    const currentNodeById =
+      new Map(
+        currentNodes.map(
+          (node) => [
+            node.id,
+            node,
+          ],
+        ),
+      );
+
+    const nextNodes =
+      currentNodes.map(
+        (node): SyntaxNode => {
+          if (
+            node.data.kind !==
+              "movementSummary"
+          ) {
+            return node;
+          }
+
+          const linkedNodeIds =
+            Array.isArray(
+              node.data
+                .movementLinkedLexicalNodeIds,
+            )
+              ? node.data
+                  .movementLinkedLexicalNodeIds
+              : [];
+
+          const linkedWords =
+            linkedNodeIds
+              .map(
+                (linkedNodeId) =>
+                  currentNodeById
+                    .get(
+                      linkedNodeId,
+                    )
+                    ?.data.label
+                    .trim() ?? "",
+              )
+              .filter(Boolean);
+
+          const synchronizedLabel =
+            linkedWords.length > 0
+              ? linkedWords.join(" ")
+              : node.data.label;
+
+          if (
+            node.data
+              .textStrikethrough ===
+              true &&
+            node.data.label ===
+              synchronizedLabel
+          ) {
+            return node;
+          }
+
+          summaryChanged = true;
+
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              label:
+                synchronizedLabel,
+              textStrikethrough:
+                true,
+            },
+          };
+        },
+      );
+
+    return summaryChanged
+      ? nextNodes
+      : currentNodes;
+  });
+
+  requestAnimationFrame(() => {
+    scheduleAutoBalance();
+  });
+}, [
+  movementSummarySyncSignature,
+  scheduleAutoBalance,
+  setNodes,
 ]);
 
 /*
@@ -7306,6 +8200,13 @@ function moveAttachedSubtree(
     return;
   }
 
+  const originalLexicalNodeIds =
+    getLexicalNodeIdsInYieldOrder(
+      draggedNode.id,
+      originalNodes,
+      edges,
+    );
+
   const lexicalYield =
     getLexicalYield(
       draggedNode.id,
@@ -7381,6 +8282,19 @@ function moveAttachedSubtree(
       data: {
         ...originalNode.data,
         isLowerCopy: false,
+
+        /*
+         * A copied movement summary must not
+         * keep links to lexical nodes in its
+         * former copy. Ordinary word and
+         * wordInput nodes remain editable.
+         */
+        movementLinkedLexicalNodeIds:
+          originalNode.data.kind ===
+            "movementSummary"
+            ? undefined
+            : originalNode.data
+                .movementLinkedLexicalNodeIds,
       },
       draggable: true,
       selected: false,
@@ -7659,6 +8573,21 @@ function moveAttachedSubtree(
         30,
     );
 
+  const linkedHigherLexicalNodeIds =
+    originalLexicalNodeIds
+      .map(
+        (originalLexicalNodeId) =>
+          clonedIdByOriginalId.get(
+            originalLexicalNodeId,
+          ),
+      )
+      .filter(
+        (
+          linkedNodeId,
+        ): linkedNodeId is string =>
+          Boolean(linkedNodeId),
+      );
+
   const summaryNode:
     SyntaxNode = {
     id: summaryNodeId,
@@ -7675,6 +8604,20 @@ function moveAttachedSubtree(
       label: lexicalYield,
       kind: "movementSummary",
       isLowerCopy: true,
+
+      /*
+       * Lower-copy lexical material is
+       * automatically struck through.
+       */
+      textStrikethrough: true,
+
+      /*
+       * Editing a word in the pronounced
+       * higher copy updates this condensed
+       * lower-copy yield.
+       */
+      movementLinkedLexicalNodeIds:
+        linkedHigherLexicalNodeIds,
     },
     draggable: false,
     selected: false,
@@ -8829,16 +9772,23 @@ function attachCreatedHeadAsAdjunct(
 
     /*
      * Create an XP → X′ → X → word chain.
+     * Built-in and user-created phrase cards
+     * use the same construction path.
      */
+    const projectionChain =
+      getProjectionChainForPaletteItem(
+        item,
+      );
+
     if (
       item.kind === "phrase" &&
-      isMaximalProjection(item.label)
+      projectionChain
     ) {
       const [
         phraseLabel,
         intermediateLabel,
         headLabel,
-      ] = projectionChains[item.label];
+      ] = projectionChain;
 
       const firstNodeNumber =
         nextNodeNumber.current;
@@ -9532,6 +10482,8 @@ function exportTreeAsLatex() {
         showNodeBoxes,
         showMovementArrows,
         showHeadWordLines,
+        nodeTextColor,
+        lexicalTextColor,
       );
 
     downloadTextFile(
@@ -9547,6 +10499,275 @@ function exportTreeAsLatex() {
     alert(message);
   }
 }
+
+  const customPhraseItems =
+    useMemo<PaletteItem[]>(
+      () =>
+        customProjectionLabels.map(
+          (phraseLabel) => ({
+            label: phraseLabel,
+            kind: "phrase",
+            projectionChain:
+              createCustomProjectionChain(
+                phraseLabel,
+              ),
+          }),
+        ),
+      [customProjectionLabels],
+    );
+
+  function addCustomProjection() {
+    const normalizedLabel =
+      normalizeCustomProjectionLabel(
+        customProjectionInput,
+      );
+
+    if (!normalizedLabel) {
+      alert(
+        "Enter a phrase name such as AspP or PredP.",
+      );
+
+      return;
+    }
+
+    const lowercaseLabel =
+      normalizedLabel.toLowerCase();
+
+    const matchesBuiltIn =
+      phraseLabels.some(
+        (item) =>
+          item.label.toLowerCase() ===
+            lowercaseLabel,
+      );
+
+    const matchesCustom =
+      customProjectionLabels.some(
+        (label) =>
+          label.toLowerCase() ===
+            lowercaseLabel,
+      );
+
+    if (
+      matchesBuiltIn ||
+      matchesCustom
+    ) {
+      alert(
+        `${normalizedLabel} is already available in the phrase palette.`,
+      );
+
+      return;
+    }
+
+    setCustomProjectionLabels(
+      (currentLabels) => [
+        ...currentLabels,
+        normalizedLabel,
+      ],
+    );
+
+    setCustomProjectionInput("");
+  }
+
+  function removeCustomProjection(
+    phraseLabel: string,
+  ) {
+    setCustomProjectionLabels(
+      (currentLabels) =>
+        currentLabels.filter(
+          (label) =>
+            label !== phraseLabel,
+        ),
+    );
+  }
+
+  const selectedStructuralEdges =
+    useMemo(
+      () =>
+        edges.filter(
+          (edge) =>
+            edge.selected &&
+            !isMovementEdge(edge),
+        ),
+      [edges],
+    );
+
+  const selectedEdgesAreTriangles =
+    selectedStructuralEdges.length >
+      0 &&
+    selectedStructuralEdges.every(
+      (edge) =>
+        edge.data?.edgeShape ===
+          "triangle",
+    );
+
+  function toggleStructuralEdgeIds(
+    edgeIds: ReadonlySet<string>,
+  ) {
+    const matchingEdges =
+      edges.filter(
+        (edge) =>
+          edgeIds.has(edge.id) &&
+          !isMovementEdge(edge),
+      );
+
+    if (
+      matchingEdges.length === 0
+    ) {
+      return;
+    }
+
+    const shouldUseTriangles =
+      !matchingEdges.every(
+        (edge) =>
+          edge.data?.edgeShape ===
+            "triangle",
+      );
+
+    saveUndoSnapshot();
+
+    setEdges((currentEdges) =>
+      currentEdges.map((edge) => {
+        if (
+          !edgeIds.has(edge.id) ||
+          isMovementEdge(edge)
+        ) {
+          return edge;
+        }
+
+        return {
+          ...edge,
+          data: {
+            ...edge.data,
+            edgeKind: "tree",
+            edgeShape:
+              shouldUseTriangles
+                ? "triangle"
+                : "line",
+          },
+        };
+      }),
+    );
+  }
+
+  function toggleSelectedEdgeShapes() {
+    toggleStructuralEdgeIds(
+      new Set(
+        selectedStructuralEdges.map(
+          (edge) => edge.id,
+        ),
+      ),
+    );
+  }
+
+  function handleEdgeDoubleClick(
+    event: ReactMouseEvent,
+    edge: Edge,
+  ) {
+    event.stopPropagation();
+
+    if (isMovementEdge(edge)) {
+      return;
+    }
+
+    const originalEdgeId =
+      typeof edge.data
+        ?.originalEdgeId ===
+        "string"
+        ? edge.data.originalEdgeId
+        : edge.id;
+
+    toggleStructuralEdgeIds(
+      new Set([
+        originalEdgeId,
+      ]),
+    );
+  }
+
+  const selectedSubscriptableNodes =
+    useMemo(
+      () =>
+        nodes.filter(
+          (node) =>
+            node.selected,
+        ),
+      [nodes],
+    );
+
+  function setSelectedNodeSubscripts() {
+    if (
+      selectedSubscriptableNodes.length ===
+      0
+    ) {
+      return;
+    }
+
+    const existingSubscripts =
+      new Set(
+        selectedSubscriptableNodes.map(
+          (node) =>
+            node.data.textSubscript ??
+            "",
+        ),
+      );
+
+    const initialValue =
+      existingSubscripts.size === 1
+        ? (
+            selectedSubscriptableNodes[0]
+              .data.textSubscript ??
+            ""
+          )
+        : "";
+
+    const enteredSubscript =
+      window.prompt(
+        "Enter the subscript for the selected node(s). Leave it blank to remove the subscript.",
+        initialValue,
+      );
+
+    if (
+      enteredSubscript === null
+    ) {
+      return;
+    }
+
+    const normalizedSubscript =
+      enteredSubscript
+        .replace(/\r\n?/g, " ")
+        .replace(/\n/g, " ")
+        .trim();
+
+    const selectedNodeIds =
+      new Set(
+        selectedSubscriptableNodes.map(
+          (node) => node.id,
+        ),
+      );
+
+    saveUndoSnapshot();
+
+    setNodes((currentNodes) =>
+      currentNodes.map((node) =>
+        selectedNodeIds.has(
+          node.id,
+        )
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                textSubscript:
+                  normalizedSubscript ||
+                  undefined,
+              },
+            }
+          : node,
+      ),
+    );
+
+    requestAnimationFrame(() => {
+      scheduleAutoBalance();
+    });
+  }
 
   const selectedHeadNodes =
     useMemo(
@@ -9860,6 +11081,19 @@ function exportTreeAsLatex() {
 
             return {
               ...edge,
+              data:
+                movementEdge
+                  ? edge.data
+                  : {
+                      ...edge.data,
+                      originalEdgeId:
+                        typeof edge.data
+                          ?.originalEdgeId ===
+                          "string"
+                          ? edge.data
+                              .originalEdgeId
+                          : edge.id,
+                    },
               type:
                 movementEdge
                   ? (
@@ -9929,6 +11163,123 @@ function exportTreeAsLatex() {
         </section>
 
         <section className="palette-section">
+          <h2>Custom phrase</h2>
+
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              addCustomProjection();
+            }}
+            style={{
+              display: "grid",
+              gap: 7,
+            }}
+          >
+            <input
+              type="text"
+              value={
+                customProjectionInput
+              }
+              onChange={(event) =>
+                setCustomProjectionInput(
+                  event.target.value,
+                )
+              }
+              placeholder="e.g. AspP or Pred"
+              aria-label="Custom phrase name"
+              spellCheck={false}
+              style={{
+                minWidth: 0,
+                minHeight: 34,
+                padding: "5px 8px",
+                border:
+                  "1px solid #aeb5bf",
+                borderRadius: 6,
+                font: "inherit",
+              }}
+            />
+
+            <button
+              type="submit"
+              title="Add a reusable custom phrase card"
+            >
+              Add custom phrase
+            </button>
+          </form>
+
+          <p
+            style={{
+              margin:
+                "7px 0 0",
+              fontSize: 12,
+              lineHeight: 1.35,
+            }}
+          >
+            Entering Asp or AspP creates
+            AspP, Asp′, Asp, and a blank
+            lexical item.
+          </p>
+
+          {customPhraseItems.length >
+            0 && (
+            <div
+              style={{
+                display: "grid",
+                gap: 6,
+                marginTop: 9,
+              }}
+            >
+              {customPhraseItems.map(
+                (item) => (
+                  <div
+                    key={item.label}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns:
+                        "minmax(0, 1fr) auto",
+                      gap: 5,
+                      alignItems:
+                        "stretch",
+                    }}
+                  >
+                    <PaletteCard
+                      item={item}
+                      onDragStart={
+                        handlePaletteDragStart
+                      }
+                    />
+
+                    <button
+                      type="button"
+                      aria-label={`Remove ${item.label} from the custom phrase palette`}
+                      title={`Remove ${item.label} from the custom phrase palette`}
+                      onClick={() =>
+                        removeCustomProjection(
+                          item.label,
+                        )
+                      }
+                      style={{
+                        minWidth: 32,
+                        padding: "0 7px",
+                        border:
+                          "1px solid #c7ccd4",
+                        borderRadius: 6,
+                        background:
+                          "#ffffff",
+                        cursor:
+                          "pointer",
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ),
+              )}
+            </div>
+          )}
+        </section>
+
+        <section className="palette-section">
           <h2>Heads</h2>
 
           <div className="palette-grid">
@@ -9965,6 +11316,26 @@ function exportTreeAsLatex() {
         For example, dragging NP creates
         NP, N′, N, and a blank lexical
         terminal.
+      </li>
+
+      <li>
+        Use Custom phrase in the sidebar
+        to add a reusable phrase name that
+        is not already in the palette.
+      </li>
+
+      <li>
+        Entering Asp or AspP creates a card
+        that builds AspP, Asp′, Asp, and a
+        blank lexical terminal when dragged
+        to the canvas.
+      </li>
+
+      <li>
+        Custom phrase cards are remembered
+        in this browser. Removing a card
+        does not delete trees that already
+        use that phrase.
       </li>
 
       <li>
@@ -10171,6 +11542,25 @@ function exportTreeAsLatex() {
         lower copy and movement arrow are
         preserved.
       </li>
+
+      <li>
+        Lexical text in the higher moved
+        copy remains editable. Double-click
+        the word at its moved position to
+        change it.
+      </li>
+
+      <li>
+        Editing the higher moved word also
+        updates the lexical yield displayed
+        in the condensed lower-copy triangle.
+      </li>
+
+      <li>
+        Lexical material in every condensed
+        lower copy is automatically shown
+        with strikeout.
+      </li>
     </ul>
   </details>
 
@@ -10218,6 +11608,27 @@ function exportTreeAsLatex() {
       </li>
 
       <li>
+        Select any node and click
+        Subscript… to add or change a
+        subscript. The same subscript can
+        be applied to several selected
+        nodes at once.
+      </li>
+
+      <li>
+        Leave the Subscript… prompt blank
+        to remove the subscript from the
+        selected node or nodes.
+      </li>
+
+      <li>
+        Subscripts are saved, undoable,
+        included in PNG export, and written
+        to LaTeX/TikZ with
+        \\textsubscript.
+      </li>
+
+      <li>
         Press Ctrl+B for bold or Ctrl+I
         for italics. Command+B and
         Command+I are also supported on
@@ -10245,6 +11656,75 @@ function exportTreeAsLatex() {
       <li>
         The tree rebalances after an edit
         changes a node’s width.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Change a branch into a triangle
+    </summary>
+
+    <ul>
+      <li>
+        Double-click any ordinary structural
+        branch to switch it between a straight
+        line and a triangle.
+      </li>
+
+      <li>
+        You can also select one or more branch
+        lines and use Make triangle or Make
+        line at the upper-left of the canvas.
+      </li>
+
+      <li>
+        Movement arrows are not converted.
+        Triangle branches remain part of the
+        same underlying tree structure.
+      </li>
+
+      <li>
+        Triangle choices are saved, undoable,
+        and preserved in PNG and LaTeX/TikZ
+        exports.
+      </li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>
+      Customize tree text colours
+    </summary>
+
+    <ul>
+      <li>
+        Open Tree text colours in the
+        upper-right canvas options.
+      </li>
+
+      <li>
+        Presets include blue node text with
+        green lexical text, black with green,
+        black with blue, and other combinations.
+      </li>
+
+      <li>
+        Use the two colour pickers to choose
+        any custom colour for phrase/head text
+        and lexical text independently.
+      </li>
+
+      <li>
+        Lexical colour applies to word boxes
+        and the lexical text inside condensed
+        movement triangles.
+      </li>
+
+      <li>
+        Colours are remembered in the browser
+        and preserved in PNG and LaTeX/TikZ
+        exports.
       </li>
     </ul>
   </details>
@@ -10851,6 +12331,73 @@ function exportTreeAsLatex() {
     <button
       type="button"
       onClick={
+        toggleSelectedEdgeShapes
+      }
+      disabled={
+        selectedStructuralEdges.length ===
+        0
+      }
+      title={
+        selectedStructuralEdges.length > 0
+          ? "Toggle the selected structural branches between straight lines and triangles. You can also double-click a branch."
+          : "Select a structural branch, or double-click one, to turn it into a triangle"
+      }
+      style={{
+        minHeight: 34,
+        padding: "0 9px",
+        border:
+          "1px solid #c7ccd4",
+        borderRadius: 6,
+        background:
+          selectedEdgesAreTriangles
+            ? "#e6edf8"
+            : "#ffffff",
+        fontWeight: 600,
+        cursor:
+          selectedStructuralEdges.length > 0
+            ? "pointer"
+            : "not-allowed",
+      }}
+    >
+      {selectedEdgesAreTriangles
+        ? "Make line"
+        : "Make triangle"}
+    </button>
+
+    <button
+      type="button"
+      onClick={
+        setSelectedNodeSubscripts
+      }
+      disabled={
+        selectedSubscriptableNodes.length ===
+        0
+      }
+      title={
+        selectedSubscriptableNodes.length > 0
+          ? "Add, change, or remove a subscript on the selected node(s)"
+          : "Select one or more nodes before adding a subscript"
+      }
+      style={{
+        minHeight: 34,
+        padding: "0 9px",
+        border:
+          "1px solid #c7ccd4",
+        borderRadius: 6,
+        background: "#ffffff",
+        fontWeight: 600,
+        cursor:
+          selectedSubscriptableNodes.length > 0
+            ? "pointer"
+            : "not-allowed",
+      }}
+    >
+      Subscript…
+    </button>
+
+    <button
+      type="button"
+      onClick={
         addBlankLexicalBoxes
       }
       disabled={
@@ -11168,6 +12715,143 @@ function exportTreeAsLatex() {
       Show head-word lines
     </label>
 
+    <details
+      style={{
+        marginTop: 2,
+        paddingTop: 6,
+        borderTop:
+          "1px solid #d8dde4",
+      }}
+    >
+      <summary
+        style={{
+          cursor: "pointer",
+          fontWeight: 600,
+          userSelect: "none",
+        }}
+      >
+        Tree text colours
+      </summary>
+
+      <div
+        style={{
+          display: "grid",
+          gap: 7,
+          marginTop: 7,
+        }}
+      >
+        <label
+          style={{
+            display: "grid",
+            gap: 3,
+          }}
+        >
+          Preset
+
+          <select
+            value={
+              getTreeTextColorPresetId(
+                nodeTextColor,
+                lexicalTextColor,
+              )
+            }
+            onChange={(event) => {
+              const preset =
+                TREE_TEXT_COLOR_PRESETS.find(
+                  (candidate) =>
+                    candidate.id ===
+                    event.target.value,
+                );
+
+              if (!preset) {
+                return;
+              }
+
+              setNodeTextColor(
+                preset.nodeColor,
+              );
+
+              setLexicalTextColor(
+                preset.lexicalColor,
+              );
+            }}
+            aria-label="Tree text colour preset"
+            style={{
+              minHeight: 30,
+              border:
+                "1px solid #aeb5bf",
+              borderRadius: 4,
+              background: "#ffffff",
+              font: "inherit",
+            }}
+          >
+            {TREE_TEXT_COLOR_PRESETS.map(
+              (preset) => (
+                <option
+                  key={preset.id}
+                  value={preset.id}
+                >
+                  {preset.label}
+                </option>
+              ),
+            )}
+
+            <option value="custom">
+              Custom
+            </option>
+          </select>
+        </label>
+
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent:
+              "space-between",
+            gap: 10,
+          }}
+        >
+          Node text
+
+          <input
+            type="color"
+            value={nodeTextColor}
+            onChange={(event) =>
+              setNodeTextColor(
+                event.target.value,
+              )
+            }
+            aria-label="Non-lexical node text colour"
+            title="Phrase and head text colour"
+          />
+        </label>
+
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent:
+              "space-between",
+            gap: 10,
+          }}
+        >
+          Lexical text
+
+          <input
+            type="color"
+            value={lexicalTextColor}
+            onChange={(event) =>
+              setLexicalTextColor(
+                event.target.value,
+              )
+            }
+            aria-label="Lexical text colour"
+            title="Lexical word and movement-summary text colour"
+          />
+        </label>
+      </div>
+    </details>
+
     <button
       type="button"
       onClick={loadDemoTree}
@@ -11195,6 +12879,8 @@ function exportTreeAsLatex() {
     showHeadWordLines,
     collapseUnusedBarLevels,
     treeLayoutMode,
+    nodeTextColor,
+    lexicalTextColor,
     requestAutoBalance:
       scheduleAutoBalance,
   }}
@@ -11215,6 +12901,9 @@ function exportTreeAsLatex() {
     }
     onNodeDragStop={
       handleNodeDragStop
+    }
+    onEdgeDoubleClick={
+      handleEdgeDoubleClick
     }
     onInit={
       setReactFlowInstance
